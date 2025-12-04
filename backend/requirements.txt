@@ -1,0 +1,23 @@
+# Core
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Audio & Transcription
+faster-whisper
+sounddevice
+numpy
+
+# LLM
+openai
+
+# TTS
+edge-tts
+
+# Database
+aiosqlite
+
+# Utils
+pydantic
+python-dotenv
+rich

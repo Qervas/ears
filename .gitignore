@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Database
+*.db
+
+# Audio files
+backend/recordings/
+backend/tts_cache/
+
+# Node
+node_modules/
+dist/
+
+# Tauri
+frontend/src-tauri/target/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Whisper models (downloaded automatically)
+*.bin
