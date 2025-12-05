@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { vocabulary, vocabularyTotal, vocabularyLoading, vocabularyFilter, selectedWord } from '../lib/stores';
-  import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord } from '../lib/api';
+  import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord, getWordsWithoutExplanations, generateSingleExplanation } from '../lib/api';
   import type { Word } from '../lib/api';
 
   let searchQuery = '';
-  let explanation = '';
+  let explanation: any = null;  // Can be string or structured object
   let explaining = false;
   let loadingMore = false;
+  let generatingBulk = false;
+  let bulkProgress = { current: 0, total: 0 };
   let viewMode: 'dictionary' | 'shuffle' = 'dictionary';
   let dictionarySort: 'alphabetical' | 'frequency' = 'frequency';
   let shuffleSort: 'random' | 'frequency' = 'random';
@@ -59,7 +61,18 @@
     try {
       const fullWord = await getWord(word.word);
       selectedWord.set(fullWord);
-      explanation = fullWord.explanation || '';
+
+      // Load saved explanation (prefer JSON, fallback to text)
+      if (fullWord.explanation_json) {
+        try {
+          explanation = JSON.parse(fullWord.explanation_json);
+        } catch (e) {
+          console.error('Failed to parse explanation JSON:', e);
+          explanation = fullWord.explanation || null;
+        }
+      } else {
+        explanation = fullWord.explanation || null;
+      }
     } catch (e) {
       console.error('Failed to load word:', e);
     }
@@ -89,6 +102,61 @@
 
   function speak(text: string) {
     playTTS(text).catch(console.error);
+  }
+
+  async function generateAllExplanations() {
+    try {
+      // Get words without explanations
+      const { words: wordsWithout } = await getWordsWithoutExplanations();
+
+      if (wordsWithout.length === 0) {
+        alert('All words already have explanations!');
+        return;
+      }
+
+      if (!confirm(`Generate AI explanations for ${wordsWithout.length} words? This may take several minutes and requires LM Studio to be running.`)) {
+        return;
+      }
+
+      generatingBulk = true;
+      bulkProgress = { current: 0, total: wordsWithout.length };
+
+      let successCount = 0;
+      let failCount = 0;
+
+      // Generate explanations one by one
+      for (let i = 0; i < wordsWithout.length; i++) {
+        const word = wordsWithout[i];
+        try {
+          const result = await generateSingleExplanation(word);
+          if (result.success) {
+            successCount++;
+          } else {
+            failCount++;
+            console.error(`Failed to generate for ${word}:`, result.error);
+          }
+        } catch (e) {
+          failCount++;
+          console.error(`Error generating for ${word}:`, e);
+        }
+        bulkProgress.current = i + 1;
+      }
+
+      // Reload vocabulary to show updated explanations
+      await loadVocabulary(false);
+      // If a word is selected, reload it
+      if ($selectedWord) {
+        await selectWord($selectedWord);
+      }
+
+      alert(`✓ Generated ${successCount} explanations\n${failCount > 0 ? `✗ Failed: ${failCount}` : ''}`);
+    } catch (e) {
+      console.error('Failed to generate explanations:', e);
+      alert('Failed to generate explanations. Make sure LM Studio is running.');
+    } finally {
+      generatingBulk = false;
+      bulkProgress = { current: 0, total: 0 };
+    }
   }
 
   $: filteredWords = searchQuery
@@ -173,6 +241,20 @@
           on:click={() => vocabularyFilter.set('known')}
         >Known</button>
       </div>
+
+      <!-- Generate All Explanations Button -->
+      <button
+        class="w-full px-3 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+        on:click={generateAllExplanations}
+        disabled={generatingBulk}
+      >
+        {#if generatingBulk}
+          <span class="animate-spin">⏳</span>
+          Generating AI Explanations...
+        {:else}
+          🤖 Generate All AI Explanations
+        {/if}
+      </button>
 
       <!-- Reshuffle button (only in shuffle mode with random sort) -->
       {#if viewMode === 'shuffle' && shuffleSort === 'random'}
@@ -269,7 +351,103 @@
           >Known</button>
         </div>
 
-        <!-- Contexts -->
+        <!-- AI Explanation -->
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-lg font-semibold text-white">AI Explanation</h3>
+            <button
+              class="px-3 py-1 bg-primary-600 hover:bg-primary-500 text-white rounded-lg text-sm disabled:opacity-50"
+              on:click={explain}
+              disabled={explaining}
+            >
+              {explaining ? 'Generating...' : 'Get Explanation'}
+            </button>
+          </div>
+
+          {#if explanation}
+            {#if typeof explanation === 'object' && !explanation.raw}
+              <!-- Structured Explanation -->
+              <div class="space-y-4">
+                <!-- Translation & Type -->
+                <div class="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                  <div class="flex items-baseline gap-3">
+                    <span class="text-2xl font-bold text-primary-400">{explanation.translation}</span>
+                    <span class="text-sm text-slate-500">({explanation.type})</span>
+                  </div>
+                </div>
+
+                <!-- Usage Patterns -->
+                {#if explanation.usagePatterns?.length}
+                  <div class="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                    <h4 class="text-sm font-semibold text-slate-400 mb-3">💡 Common Usage</h4>
+                    <div class="space-y-2">
+                      {#each explanation.usagePatterns as pattern}
+                        <div class="flex items-start gap-2">
+                          <span class="text-slate-600">•</span>
+                          <div>
+                            <span class="text-white font-medium">{pattern.pattern}</span>
+                            <span class="text-slate-500"> → {pattern.meaning}</span>
+                            {#if pattern.category}
+                              <span class="ml-2 text-xs text-slate-600">({pattern.category})</span>
+                            {/if}
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- Related Words -->
+                {#if explanation.relatedWords?.length}
+                  <div class="p-4 bg-slate-800 rounded-lg border border-slate-700">
+                    <h4 class="text-sm font-semibold text-slate-400 mb-3">🔗 Related Words</h4>
+                    <div class="flex flex-wrap gap-2">
+                      {#each explanation.relatedWords as related}
+                        <div class="px-3 py-1.5 bg-slate-700 rounded-lg text-sm">
+                          <span class="text-white font-medium">{related.word}</span>
+                          <span class="text-slate-500 mx-1">·</span>
+                          <span class="text-slate-400">{related.translation}</span>
+                          <span class="ml-1 text-xs text-slate-600">({related.relation})</span>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- Tip -->
+                {#if explanation.tip}
+                  <div class="p-4 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
+                    <div class="flex items-start gap-2">
+                      <span class="text-yellow-400">💡</span>
+                      <p class="text-yellow-200 text-sm">{explanation.tip}</p>
+                    </div>
+                  </div>
+                {/if}
+
+                <!-- Cultural Note -->
+                {#if explanation.note}
+                  <div class="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                    <div class="flex items-start gap-2">
+                      <span class="text-blue-400">ℹ️</span>
+                      <p class="text-blue-200 text-sm">{explanation.note}</p>
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <!-- Legacy Plain Text Explanation -->
+              <div class="p-4 bg-slate-800 rounded-lg border border-slate-700 whitespace-pre-wrap text-slate-300">
+                {typeof explanation === 'object' ? explanation.raw : explanation}
+              </div>
+            {/if}
+          {:else}
+            <div class="p-4 bg-slate-800 rounded-lg border border-slate-700 text-slate-500">
+              Click "Get Explanation" to have AI explain this word
+            </div>
+          {/if}
+        </div>
+
+        <!-- Example Sentences -->
         {#if $selectedWord.contexts?.length}
           <div>
             <h3 class="text-lg font-semibold text-white mb-3">Example Sentences</h3>
@@ -286,29 +464,6 @@
             </div>
           </div>
         {/if}
-
-        <!-- AI Explanation -->
-        <div>
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-lg font-semibold text-white">AI Explanation</h3>
-            <button
-              class="px-3 py-1 bg-primary-600 hover:bg-primary-500 text-white rounded-lg text-sm disabled:opacity-50"
-              on:click={explain}
-              disabled={explaining}
-            >
-              {explaining ? 'Generating...' : 'Get Explanation'}
-            </button>
-          </div>
-          {#if explanation}
-            <div class="p-4 bg-slate-800 rounded-lg border border-slate-700 whitespace-pre-wrap text-slate-300">
-              {explanation}
-            </div>
-          {:else}
-            <div class="p-4 bg-slate-800 rounded-lg border border-slate-700 text-slate-500">
-              Click "Get Explanation" to have AI explain this word
-            </div>
-          {/if}
-        </div>
       </div>
     {:else}
       <div class="h-full flex items-center justify-center text-slate-500">
@@ -317,3 +472,29 @@
     {/if}
   </div>
 </div>
+
+<!-- Progress Modal -->
+{#if generatingBulk && bulkProgress.total > 0}
+  <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+    <div class="bg-slate-800 rounded-xl p-8 max-w-md w-full mx-4 border border-slate-700">
+      <h3 class="text-xl font-bold text-white mb-4">Generating AI Explanations</h3>
+
+      <div class="mb-4">
+        <div class="flex justify-between text-sm text-slate-400 mb-2">
+          <span>Progress</span>
+          <span>{bulkProgress.current} / {bulkProgress.total}</span>
+        </div>
+        <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
+          <div
+            class="h-full bg-purple-600 transition-all duration-300"
+            style="width: {(bulkProgress.current / bulkProgress.total) * 100}%"
+          ></div>
+        </div>
+      </div>
+
+      <p class="text-slate-400 text-sm text-center">
+        This may take several minutes. Please wait...
+      </p>
+    </div>
+  </div>
+{/if}

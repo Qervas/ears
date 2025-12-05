@@ -156,11 +156,20 @@ class Database:
             await db.commit()
 
     async def save_explanation(self, word: str, explanation: str):
-        """Save AI explanation for a word."""
+        """Save AI explanation for a word (legacy text field)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 "UPDATE vocabulary SET explanation = ? WHERE word = ?",
                 (explanation, word)
+            )
+            await db.commit()
+
+    async def update_word_explanation(self, word: str, explanation_json: str):
+        """Save structured JSON explanation for a word."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE vocabulary SET explanation_json = ? WHERE word = ?",
+                (explanation_json, word)
             )
             await db.commit()
 
@@ -251,7 +260,7 @@ class Database:
             db.row_factory = aiosqlite.Row
             # Get learning words sorted by frequency
             cursor = await db.execute("""
-                SELECT v.id, v.word, v.frequency, v.status, v.explanation,
+                SELECT v.id, v.word, v.frequency, v.status, v.explanation_json,
                        (SELECT context FROM word_contexts wc WHERE wc.word_id = v.id LIMIT 1) as example
                 FROM vocabulary v
                 WHERE v.status = 'learning'

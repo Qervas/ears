@@ -97,6 +97,79 @@ async def get_vocabulary_stats():
     return await db.get_stats()
 
 
+@app.get("/api/vocabulary/words-without-explanations")
+async def get_words_without_explanations():
+    """Get list of words without explanation_json."""
+    # Get total count first
+    total = await db.get_vocabulary_count()
+    # Fetch all words
+    words = await db.get_vocabulary(limit=total, offset=0)
+    words_without = [
+        w['word'] for w in words
+        if not w.get('explanation_json')
+    ]
+    return {"words": words_without}
+
+
+@app.post("/api/vocabulary/generate-explanation/{word}")
+async def generate_single_explanation(word: str):
+    """Generate AI explanation for a single word."""
+    from openai import OpenAI
+    import json as json_module
+
+    # Get context examples
+    contexts = await db.get_word_contexts(word, limit=2)
+    context = contexts[0] if contexts else ""
+
+    prompt = f"""You are a Swedish language teacher helping English speakers learn Swedish.
+
+Explain the Swedish word: "{word}"
+{f'Context where learner saw it: "{context}"' if context else ''}
+
+Provide a structured JSON explanation in this exact format:
+{{
+  "translation": "primary English translation",
+  "type": "word type (noun/verb/adjective/preposition/etc.)",
+  "usagePatterns": [
+    {{"pattern": "swedish phrase", "meaning": "english meaning", "category": "type like 'accompaniment' or 'instrument'"}},
+    {{"pattern": "another phrase", "meaning": "its meaning", "category": "category"}}
+  ],
+  "relatedWords": [
+    {{"word": "swedish word", "relation": "opposite/similar/related", "translation": "english"}},
+    {{"word": "another word", "relation": "type", "translation": "english"}}
+  ],
+  "tip": "One helpful sentence about usage or memory trick",
+  "note": "Cultural note or important grammar point (or null if none)"
+}}
+
+Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related words."""
+
+    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+
+    try:
+        response = client.chat.completions.create(
+            model="local-model",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=800,
+        )
+
+        explanation_text = response.choices[0].message.content.strip()
+
+        # Try to parse as JSON
+        try:
+            json_module.loads(explanation_text)  # Validate JSON
+            await db.update_word_explanation(word, explanation_text)
+            return {"success": True, "word": word}
+        except json_module.JSONDecodeError:
+            print(f"Failed to parse JSON for word: {word}")
+            return {"success": False, "word": word, "error": "Invalid JSON response"}
+
+    except Exception as e:
+        print(f"Error generating explanation for {word}: {e}")
+        return {"success": False, "word": word, "error": str(e)}
+
+
 @app.get("/api/vocabulary/{word}")
 async def get_word(word: str):
     """Get word details with contexts."""
@@ -183,31 +256,62 @@ async def text_to_speech(word: str, voice: str = "sv-SE-SofieNeural"):
 
 @app.post("/api/explain")
 async def explain_word(data: ExplanationRequest):
-    """Get AI explanation for a word."""
+    """Get AI explanation for a word with structured JSON output."""
     from openai import OpenAI
+    import json as json_module
 
     client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
 
-    prompt = f"""Explain the Swedish word "{data.word}" to an English speaker learning Swedish.
-Include:
-1. English translation
-2. Part of speech (noun, verb, etc.)
-3. Common usage
-4. Example sentence in Swedish with English translation
+    # Get word frequency for context
+    db = Database()
+    word_data = await db.get_word(data.word)
+    frequency = word_data.get('frequency', 0) if word_data else 0
 
-Keep it concise."""
+    prompt = f"""You are a Swedish language teacher. Explain the Swedish word "{data.word}" (seen {frequency} times by the learner) in a structured, engaging way.
+
+Respond with ONLY a valid JSON object (no markdown, no code blocks) with this exact structure:
+{{
+  "translation": "primary English translation",
+  "type": "word type (noun/verb/adjective/preposition/etc.)",
+  "usagePatterns": [
+    {{"pattern": "swedish phrase", "meaning": "english meaning", "category": "type like 'accompaniment' or 'instrument'"}},
+    {{"pattern": "another phrase", "meaning": "its meaning", "category": "category"}}
+  ],
+  "relatedWords": [
+    {{"word": "swedish word", "relation": "opposite/similar/related", "translation": "english"}},
+    {{"word": "another word", "relation": "type", "translation": "english"}}
+  ],
+  "tip": "One helpful sentence about usage or memory trick",
+  "note": "Cultural note or important grammar point (or null if none)"
+}}
+
+Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related words."""
 
     if data.context:
-        prompt += f"\n\nContext where the word appeared: {data.context}"
+        prompt += f"\n\nThe learner saw this word in context: \"{data.context}\""
 
     try:
         response = client.chat.completions.create(
             model="local-model",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=500,
+            max_tokens=800,
         )
-        return {"explanation": response.choices[0].message.content}
+
+        explanation_text = response.choices[0].message.content.strip()
+
+        # Try to parse as JSON
+        try:
+            explanation_json = json_module.loads(explanation_text)
+
+            # Save to database
+            await db.update_word_explanation(data.word, explanation_text)
+
+            return {"explanation": explanation_json}
+        except json_module.JSONDecodeError:
+            # Fallback to plain text if JSON parsing fails
+            return {"explanation": {"raw": explanation_text}}
+
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"LLM unavailable: {str(e)}")
 
@@ -270,6 +374,241 @@ async def get_learning_progress():
         "learning": stats["learning"],
         "progress_percent": round(stats["known"] / max(stats["total_words"], 1) * 100, 1)
     }
+
+
+@app.get("/api/learn/listening-quiz")
+async def get_listening_quiz(count: int = 10):
+    """Get random Swedish segments from recordings for listening practice."""
+    import json as json_module
+    import random
+
+    # Get all JSON transcript files
+    json_files = list(RECORDINGS_DIR.glob("*.json"))
+
+    if not json_files:
+        return {"segments": []}
+
+    # Collect all Swedish segments from all recordings
+    all_segments = []
+
+    for json_file in json_files:
+        try:
+            data = json_module.loads(json_file.read_text(encoding='utf-8'))
+            recording_name = json_file.stem + ".wav"
+
+            for seg in data.get("segments", []):
+                # Only include Swedish segments with timestamps and reasonable length
+                if (seg.get("language") == "sv" and
+                    seg.get("start") is not None and
+                    seg.get("end") is not None and
+                    len(seg.get("text", "").strip()) > 10):  # At least 10 chars
+
+                    all_segments.append({
+                        "text": seg["text"].strip(),
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "recording": recording_name,
+                        "audio_url": f"http://localhost:8000/api/recordings/{recording_name}/audio"
+                    })
+        except Exception as e:
+            print(f"Error reading {json_file}: {e}")
+            continue
+
+    # Randomly select segments
+    if len(all_segments) == 0:
+        return {"segments": []}
+
+    selected = random.sample(all_segments, min(count, len(all_segments)))
+
+    return {"segments": selected}
+
+
+@app.get("/api/learn/grammar-patterns")
+async def get_grammar_patterns():
+    """Extract grammar patterns from recordings."""
+    import json as json_module
+    from collections import defaultdict
+
+    # Common Swedish prepositions
+    PREPOSITIONS = ['med', 'på', 'i', 'till', 'från', 'av', 'för', 'om', 'över', 'under', 'vid', 'hos', 'åt']
+
+    # Common Swedish modal verbs
+    MODALS = ['ska', 'vill', 'kan', 'måste', 'bör', 'får', 'skulle', 'kunde']
+
+    json_files = list(RECORDINGS_DIR.glob("*.json"))
+
+    if not json_files:
+        return {"patterns": []}
+
+    # Collect patterns
+    prep_patterns = defaultdict(list)
+    modal_patterns = defaultdict(list)
+
+    for json_file in json_files:
+        try:
+            data = json_module.loads(json_file.read_text(encoding='utf-8'))
+            recording_name = json_file.stem + ".wav"
+
+            for seg in data.get("segments", []):
+                if seg.get("language") != "sv":
+                    continue
+
+                text = seg.get("text", "").strip()
+                words = text.lower().split()
+
+                # Find preposition patterns
+                for i, word in enumerate(words):
+                    if word in PREPOSITIONS:
+                        # Get context (1 word before, prep, 2 words after if available)
+                        context_before = words[i-1] if i > 0 else ""
+                        context_after = " ".join(words[i+1:i+3]) if i < len(words)-1 else ""
+
+                        if context_before and context_after:
+                            prep_patterns[word].append({
+                                "text": text,
+                                "context_before": context_before,
+                                "preposition": word,
+                                "context_after": context_after,
+                                "recording": recording_name
+                            })
+
+                # Find modal verb patterns
+                for i, word in enumerate(words):
+                    if word in MODALS and i < len(words) - 1:
+                        # Modal + verb pattern
+                        modal_patterns[word].append({
+                            "text": text,
+                            "modal": word,
+                            "following_word": words[i+1],
+                            "recording": recording_name
+                        })
+
+        except Exception as e:
+            print(f"Error processing {json_file}: {e}")
+            continue
+
+    # Format patterns for frontend
+    patterns = []
+
+    # Add preposition patterns
+    for prep, examples in prep_patterns.items():
+        if len(examples) >= 3:  # Only include if we have at least 3 examples
+            patterns.append({
+                "type": "preposition",
+                "word": prep,
+                "count": len(examples),
+                "examples": examples[:10]  # Limit to 10 examples
+            })
+
+    # Add modal verb patterns
+    for modal, examples in modal_patterns.items():
+        if len(examples) >= 3:
+            patterns.append({
+                "type": "modal",
+                "word": modal,
+                "count": len(examples),
+                "examples": examples[:10]
+            })
+
+    # Sort by count (most common first)
+    patterns.sort(key=lambda x: x["count"], reverse=True)
+
+    return {"patterns": patterns[:20]}  # Return top 20 patterns
+
+
+@app.get("/api/learn/grammar-quiz")
+async def get_grammar_quiz(count: int = 10):
+    """Generate grammar fill-in-the-blank quiz using AI."""
+    from openai import OpenAI
+    import json as json_module
+    import random
+
+    # First, get patterns
+    patterns_response = await get_grammar_patterns()
+    patterns = patterns_response.get("patterns", [])
+
+    if not patterns:
+        return {"questions": []}
+
+    # Select random patterns
+    selected_patterns = random.sample(patterns, min(count, len(patterns)))
+
+    questions = []
+
+    # Use LLM to generate quiz questions
+    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+
+    for pattern in selected_patterns:
+        # Get 2-3 real examples from recordings
+        examples = pattern.get("examples", [])[:3]
+        word = pattern["word"]
+        pattern_type = pattern["type"]
+
+        # Create a base sentence from examples
+        if not examples:
+            continue
+
+        base_example = examples[0]["text"]
+
+        # Generate AI quiz question
+        prompt = f"""You are a Swedish language teacher. Based on this Swedish word "{word}" ({pattern_type}), create a fill-in-the-blank quiz question.
+
+Real example from student's recordings: "{base_example}"
+
+Generate a JSON response with:
+1. A new sentence with "{word}" replaced by "___"
+2. Four options (one correct: "{word}", three plausible Swedish alternatives)
+3. A brief explanation of when to use "{word}"
+
+Respond with ONLY valid JSON (no markdown, no code blocks):
+{{
+  "sentence": "Swedish sentence with ___",
+  "options": ["word1", "word2", "word3", "word4"],
+  "correct_index": 0,
+  "explanation": "Brief explanation"
+}}"""
+
+        try:
+            response = client.chat.completions.create(
+                model="local-model",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=300,
+            )
+
+            ai_response = response.choices[0].message.content.strip()
+
+            # Parse JSON
+            try:
+                quiz_data = json_module.loads(ai_response)
+                questions.append({
+                    "word": word,
+                    "type": pattern_type,
+                    "sentence": quiz_data.get("sentence", ""),
+                    "options": quiz_data.get("options", []),
+                    "correct_index": quiz_data.get("correct_index", 0),
+                    "explanation": quiz_data.get("explanation", ""),
+                    "real_examples": [ex["text"] for ex in examples]
+                })
+            except json_module.JSONDecodeError:
+                # Fallback: create simple question from real example
+                # Blank out the target word
+                sentence_with_blank = base_example.replace(word, "___", 1)
+                questions.append({
+                    "word": word,
+                    "type": pattern_type,
+                    "sentence": sentence_with_blank,
+                    "options": [word, "på", "i", "till"],  # Simple fallback options
+                    "correct_index": 0,
+                    "explanation": f"Common usage of '{word}'",
+                    "real_examples": [ex["text"] for ex in examples]
+                })
+
+        except Exception as e:
+            print(f"Error generating quiz for {word}: {e}")
+            continue
+
+    return {"questions": questions[:count]}
 
 
 # ============== Recordings ==============

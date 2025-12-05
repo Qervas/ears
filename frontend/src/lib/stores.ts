@@ -5,8 +5,29 @@
 import { writable, derived } from 'svelte/store';
 import type { Word, Stats } from './api';
 
-// Current view/page
-export const currentView = writable<'dashboard' | 'vocabulary' | 'learn' | 'chat' | 'recordings'>('dashboard');
+// Persistent writable store (saves to localStorage)
+function persistentWritable<T>(key: string, initialValue: T) {
+  // Check if running in browser
+  const isBrowser = typeof window !== 'undefined';
+
+  // Load from localStorage if available
+  const stored = isBrowser ? localStorage.getItem(key) : null;
+  const data = stored ? JSON.parse(stored) : initialValue;
+
+  const store = writable<T>(data);
+
+  // Save to localStorage on changes (only in browser)
+  if (isBrowser) {
+    store.subscribe(value => {
+      localStorage.setItem(key, JSON.stringify(value));
+    });
+  }
+
+  return store;
+}
+
+// Current view/page (persisted across refreshes)
+export const currentView = persistentWritable<'dashboard' | 'vocabulary' | 'learn' | 'chat' | 'recordings'>('currentView', 'dashboard');
 
 // Vocabulary state
 export const vocabulary = writable<Word[]>([]);

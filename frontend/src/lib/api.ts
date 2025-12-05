@@ -30,7 +30,9 @@ export interface Word {
   first_seen: string;
   last_seen: string;
   explanation?: string;
+  explanation_json?: string;  // JSON string containing structured explanation
   contexts?: string[];
+  example?: string;  // Example sentence from context
 }
 
 export interface VocabularyResponse {
@@ -96,6 +98,40 @@ export async function getLearningSession(mode = 'vocabulary', count = 10): Promi
   return request(`/learn/session?mode=${mode}&count=${count}`);
 }
 
+export interface ListeningSegment {
+  text: string;
+  start: number;
+  end: number;
+  recording: string;
+  audio_url: string;
+}
+
+export interface ListeningQuizResponse {
+  segments: ListeningSegment[];
+}
+
+export async function getListeningQuiz(count = 10): Promise<ListeningQuizResponse> {
+  return request(`/learn/listening-quiz?count=${count}`);
+}
+
+export interface GrammarQuestion {
+  word: string;
+  type: string;
+  sentence: string;
+  options: string[];
+  correct_index: number;
+  explanation: string;
+  real_examples: string[];
+}
+
+export interface GrammarQuizResponse {
+  questions: GrammarQuestion[];
+}
+
+export async function getGrammarQuiz(count = 10): Promise<GrammarQuizResponse> {
+  return request(`/learn/grammar-quiz?count=${count}`);
+}
+
 // ============== TTS ==============
 
 export function getTTSUrl(text: string, voice = 'sv-SE-SofieNeural'): string {
@@ -117,6 +153,16 @@ export async function explainWord(word: string, context = ''): Promise<Explanati
   return request('/explain', {
     method: 'POST',
     body: JSON.stringify({ word, context }),
+  });
+}
+
+export async function getWordsWithoutExplanations(): Promise<{ words: string[] }> {
+  return request('/vocabulary/words-without-explanations');
+}
+
+export async function generateSingleExplanation(word: string): Promise<{ success: boolean; word: string; error?: string }> {
+  return request(`/vocabulary/generate-explanation/${encodeURIComponent(word)}`, {
+    method: 'POST',
   });
 }
 
