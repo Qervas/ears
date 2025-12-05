@@ -37,18 +37,14 @@
   {#if $stats}
     <div class="p-4 border-t border-slate-700">
       <div class="text-sm text-slate-400 mb-2">Your Progress</div>
-      <div class="grid grid-cols-3 gap-2 text-center">
-        <div>
-          <div class="text-lg font-bold text-green-400">{$stats.known}</div>
-          <div class="text-xs text-slate-500">Known</div>
-        </div>
+      <div class="grid grid-cols-2 gap-2 text-center">
         <div>
           <div class="text-lg font-bold text-yellow-400">{$stats.learning}</div>
           <div class="text-xs text-slate-500">Learning</div>
         </div>
         <div>
-          <div class="text-lg font-bold text-slate-400">{$stats.new}</div>
-          <div class="text-xs text-slate-500">New</div>
+          <div class="text-lg font-bold text-green-400">{$stats.known}</div>
+          <div class="text-xs text-slate-500">Known</div>
         </div>
       </div>
     </div>

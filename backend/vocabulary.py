@@ -20,9 +20,18 @@ def init_vocab_db():
             frequency INTEGER DEFAULT 1,
             first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
             last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'new'  -- new, learning, known, ignored
+            status TEXT DEFAULT 'learning'  -- learning, known
         )
     """)
+
+    # Fix any words with NULL or invalid status - set them to 'learning'
+    cursor.execute("""
+        UPDATE vocabulary
+        SET status = 'learning'
+        WHERE status IS NULL OR status NOT IN ('learning', 'known')
+    """)
+    if cursor.rowcount > 0:
+        print(f"Fixed {cursor.rowcount} words with invalid status -> 'learning'")
 
     # Contexts table - example sentences for each word
     cursor.execute("""
@@ -63,9 +72,10 @@ def add_word(word: str, context: str, transcript_id: int = None):
     cursor = conn.cursor()
 
     # Try to insert or update frequency
+    # New words get status='learning', existing words keep their status
     cursor.execute("""
-        INSERT INTO vocabulary (word, frequency, last_seen)
-        VALUES (?, 1, CURRENT_TIMESTAMP)
+        INSERT INTO vocabulary (word, frequency, status, last_seen)
+        VALUES (?, 1, 'learning', CURRENT_TIMESTAMP)
         ON CONFLICT(word) DO UPDATE SET
             frequency = frequency + 1,
             last_seen = CURRENT_TIMESTAMP
@@ -91,26 +101,56 @@ def add_word(word: str, context: str, transcript_id: int = None):
     conn.close()
 
 
-def build_from_transcripts():
-    """Build vocabulary from all transcripts."""
+def build_from_transcripts(swedish_only: bool = True):
+    """Build vocabulary from all transcripts.
+
+    Args:
+        swedish_only: If True, only process Swedish segments (skip English)
+    """
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Get all transcripts
-    cursor.execute("""
-        SELECT id, raw_text, cleaned_text FROM transcripts
-    """)
-    transcripts = cursor.fetchall()
+    # Get all transcripts - include language column if it exists
+    try:
+        cursor.execute("""
+            SELECT id, raw_text, cleaned_text, language FROM transcripts
+        """)
+        transcripts = cursor.fetchall()
+        has_language = True
+    except sqlite3.OperationalError:
+        # Old schema without language column
+        cursor.execute("""
+            SELECT id, raw_text, cleaned_text FROM transcripts
+        """)
+        transcripts = [(t[0], t[1], t[2], 'sv') for t in cursor.fetchall()]
+        has_language = False
+
     conn.close()
 
     if not transcripts:
         print("No transcripts found. Record some audio first!")
         return
 
-    print(f"Processing {len(transcripts)} transcript segments...")
+    total_segments = len(transcripts)
+    sv_segments = sum(1 for t in transcripts if t[3] == 'sv')
+    en_segments = total_segments - sv_segments
+
+    print(f"Found {total_segments} transcript segments (SV: {sv_segments}, EN: {en_segments})")
+
+    if swedish_only:
+        print("Building vocabulary from Swedish segments only...")
+    else:
+        print("Building vocabulary from all segments...")
 
     word_count = 0
-    for transcript_id, raw_text, cleaned_text in transcripts:
+    skipped_segments = 0
+
+    for transcript_id, raw_text, cleaned_text, language in transcripts:
+        # Skip English segments if swedish_only
+        if swedish_only and language == 'en':
+            skipped_segments += 1
+            continue
+
         # Prefer cleaned text if available
         text = cleaned_text or raw_text
         if not text:
@@ -122,6 +162,8 @@ def build_from_transcripts():
             word_count += 1
 
     print(f"Processed {word_count} word occurrences")
+    if skipped_segments > 0:
+        print(f"Skipped {skipped_segments} English segments")
 
     # Show stats
     show_stats()
@@ -138,9 +180,6 @@ def show_stats():
     cursor.execute("SELECT SUM(frequency) FROM vocabulary")
     total_occurrences = cursor.fetchone()[0] or 0
 
-    cursor.execute("SELECT COUNT(*) FROM vocabulary WHERE status = 'new'")
-    new_words = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM vocabulary WHERE status = 'learning'")
     learning_words = cursor.fetchone()[0]
 
@@ -154,7 +193,6 @@ def show_stats():
     print("=" * 50)
     print(f"  Unique words:     {total_words}")
     print(f"  Total occurrences: {total_occurrences}")
-    print(f"  New:              {new_words}")
     print(f"  Learning:         {learning_words}")
     print(f"  Known:            {known_words}")
     print("=" * 50)
@@ -204,8 +242,8 @@ def get_word_contexts(word: str) -> list:
 
 def set_word_status(word: str, status: str):
     """Set the learning status of a word."""
-    if status not in ('new', 'learning', 'known', 'ignored'):
-        print(f"Invalid status: {status}")
+    if status not in ('learning', 'known'):
+        print(f"Invalid status: {status}. Use 'learning' or 'known'.")
         return
 
     conn = sqlite3.connect(DATABASE_PATH)
@@ -247,10 +285,10 @@ def interactive_review():
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
-    # Get new words sorted by frequency (learn common words first)
+    # Get learning words sorted by frequency (learn common words first)
     cursor.execute("""
         SELECT word, frequency FROM vocabulary
-        WHERE status = 'new'
+        WHERE status = 'learning'
         ORDER BY frequency DESC
         LIMIT 20
     """)
@@ -258,12 +296,12 @@ def interactive_review():
     conn.close()
 
     if not words:
-        print("No new words to review!")
+        print("No words to review!")
         return
 
     print("\n" + "=" * 50)
     print("VOCABULARY REVIEW")
-    print("Commands: [k]nown, [l]earning, [i]gnore, [s]kip, [q]uit")
+    print("Commands: [k]nown, [s]kip, [q]uit")
     print("=" * 50)
 
     for word, freq in words:
@@ -273,14 +311,10 @@ def interactive_review():
         if contexts:
             print("Example:", contexts[0][:100])
 
-        action = input("[k/l/i/s/q]: ").strip().lower()
+        action = input("[k/s/q]: ").strip().lower()
 
         if action == 'k':
             set_word_status(word, 'known')
-        elif action == 'l':
-            set_word_status(word, 'learning')
-        elif action == 'i':
-            set_word_status(word, 'ignored')
         elif action == 'q':
             break
         # 's' or anything else = skip
@@ -318,7 +352,7 @@ def main():
         print(f"\nTop {limit} words by frequency:")
         print("-" * 40)
         for i, (word, freq, status) in enumerate(words, 1):
-            status_mark = {"new": "·", "learning": "→", "known": "✓", "ignored": "×"}.get(status, "?")
+            status_mark = {"learning": "→", "known": "✓"}.get(status, "?")
             print(f"{i:3}. {word:20} {freq:5}x  {status_mark}")
 
     elif cmd == "review":

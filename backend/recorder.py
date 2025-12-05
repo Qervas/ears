@@ -5,15 +5,69 @@ import numpy as np
 import wave
 import time
 import threading
+import re
 from datetime import datetime
 from pathlib import Path
+
+# Base directory (where recorder.py is located)
+BASE_DIR = Path(__file__).parent.resolve()
+RECORDINGS_DIR = BASE_DIR / "recordings"
+
+
+# Common Swedish words that rarely appear in English
+SWEDISH_INDICATORS = {
+    'och', 'att', 'det', 'som', 'är', 'för', 'på', 'med', 'har', 'av',
+    'till', 'var', 'jag', 'den', 'inte', 'om', 'ett', 'han', 'hon', 'de',
+    'vi', 'så', 'kan', 'vad', 'men', 'från', 'eller', 'när', 'vara', 'alla',
+    'nu', 'här', 'där', 'ska', 'hur', 'sig', 'mycket', 'också', 'efter',
+    'bara', 'genom', 'sin', 'mot', 'utan', 'sedan', 'där', 'skulle', 'får',
+    'två', 'säger', 'varit', 'över', 'redan', 'finns', 'helt', 'själv',
+    'något', 'aldrig', 'under', 'mellan', 'också', 'dock', 'enligt', 'blev',
+    'ännu', 'även', 'kunde', 'hade', 'många', 'vilket', 'går', 'blir',
+    'alltid', 'därför', 'varför', 'nästa', 'samma', 'annat', 'kanske',
+    'måste', 'åt', 'väl', 'ju', 'ändå', 'deras', 'några', 'hennes', 'hans',
+    # Swedish-specific characters
+    'år', 'öppen', 'ända', 'älskar', 'äger', 'öka', 'åker',
+}
+
+# Common English words that rarely appear in Swedish
+ENGLISH_INDICATORS = {
+    'the', 'is', 'are', 'was', 'were', 'been', 'being', 'have', 'has', 'had',
+    'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+    'must', 'shall', 'this', 'that', 'these', 'those', 'what', 'which', 'who',
+    'whom', 'whose', 'where', 'when', 'why', 'how', 'because', 'although',
+    'though', 'while', 'if', 'unless', 'until', 'before', 'after', 'since',
+    'about', 'above', 'below', 'between', 'into', 'through', 'during',
+    'against', 'among', 'throughout', 'despite', 'towards', 'upon', 'whether',
+    'however', 'therefore', 'otherwise', 'moreover', 'furthermore', 'meanwhile',
+    'anyway', 'actually', 'really', 'probably', 'certainly', 'definitely',
+    'obviously', 'apparently', 'especially', 'particularly', 'specifically',
+    'you', 'your', 'we', 'our', 'they', 'their', 'its', 'my', 'his', 'her',
+}
+
+
+def detect_segment_language(text: str) -> str:
+    """Detect if a text segment is Swedish or English based on word patterns."""
+    words = set(re.findall(r'\b\w+\b', text.lower()))
+
+    sv_matches = len(words & SWEDISH_INDICATORS)
+    en_matches = len(words & ENGLISH_INDICATORS)
+
+    # Check for Swedish-specific characters (å, ä, ö)
+    if re.search(r'[åäöÅÄÖ]', text):
+        sv_matches += 3  # Boost Swedish score
+
+    # Default to Swedish if tied or close (since we're watching Swedish content)
+    if sv_matches >= en_matches:
+        return "sv"
+    return "en"
 
 
 class Recorder:
     """Records system audio to WAV files."""
 
-    def __init__(self, output_dir: str = "recordings"):
-        self.output_dir = Path(output_dir)
+    def __init__(self, output_dir: Path = None):
+        self.output_dir = output_dir or RECORDINGS_DIR
         self.output_dir.mkdir(exist_ok=True)
         self.recording = False
         self.frames = []
@@ -116,10 +170,10 @@ def transcribe_file(filepath: str):
     print(f"Audio length: {total_duration:.1f} seconds ({total_duration/60:.1f} minutes)")
     print("Transcribing entire file (this may take a while)...\n")
 
-    # Transcribe the ENTIRE audio at once - faster-whisper handles chunking internally
+    # Transcribe - still hint Swedish but we'll detect language per segment
     segments, info = model.transcribe(
         audio,
-        language=WHISPER_LANGUAGE,
+        language=WHISPER_LANGUAGE,  # Hint Swedish for better accuracy
         beam_size=5,
         vad_filter=True,
         vad_parameters=dict(
@@ -129,10 +183,14 @@ def transcribe_file(filepath: str):
     )
 
     all_text = []
+    sv_text = []
+    timed_segments = []  # For JSON output with timestamps
     segment_count = 0
+    sv_count = 0
+    en_count = 0
 
-    print("Time        | Text")
-    print("-" * 70)
+    print("Time        | Lang | Text")
+    print("-" * 80)
 
     for segment in segments:
         start_time = segment.start
@@ -141,22 +199,42 @@ def transcribe_file(filepath: str):
 
         if text:
             segment_count += 1
+
+            # Detect language for this segment
+            detected_lang = detect_segment_language(text)
             all_text.append(text)
 
-            # Save each segment to database
+            # Store timed segment for JSON
+            timed_segments.append({
+                "start": start_time,
+                "end": end_time,
+                "text": text,
+                "language": detected_lang
+            })
+
+            if detected_lang == "sv":
+                sv_text.append(text)
+                sv_count += 1
+            else:
+                en_count += 1
+
+            # Save each segment to database with language tag
             save_transcript(
                 raw_text=text,
                 confidence=segment.avg_logprob,
-                duration=end_time - start_time
+                duration=end_time - start_time,
+                language=detected_lang
             )
 
             # Format timestamp
             start_str = f"{int(start_time//60):02d}:{start_time%60:05.2f}"
             end_str = f"{int(end_time//60):02d}:{end_time%60:05.2f}"
-            print(f"[{start_str}-{end_str}] {text}")
+            lang_tag = "SV" if detected_lang == "sv" else "EN"
+            print(f"[{start_str}-{end_str}] [{lang_tag}] {text}")
 
     print("\n" + "=" * 70)
     print(f"TRANSCRIPTION COMPLETE: {segment_count} segments from {total_duration:.1f}s audio")
+    print(f"  Swedish: {sv_count} segments | English: {en_count} segments")
     print("=" * 70)
     print("\nFULL TEXT:")
     print("-" * 70)
@@ -164,7 +242,8 @@ def transcribe_file(filepath: str):
     print(full_text)
     print("-" * 70)
     print(f"\nWord count: {len(full_text.split())}")
-    print(f"Saved to database: {segment_count} segments")
+    print(f"Swedish word count: {len(' '.join(sv_text).split())}")
+    print(f"Saved to database: {segment_count} segments ({sv_count} SV, {en_count} EN)")
 
     # Also save full transcript to text file
     txt_path = filepath.replace('.wav', '.txt')
@@ -172,17 +251,31 @@ def transcribe_file(filepath: str):
         f.write(full_text)
     print(f"Saved transcript to: {txt_path}")
 
+    # Save timestamped segments to JSON for synced playback
+    import json
+    json_path = filepath.replace('.wav', '.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            "duration": total_duration,
+            "segments": timed_segments,
+            "stats": {
+                "total": segment_count,
+                "swedish": sv_count,
+                "english": en_count
+            }
+        }, f, ensure_ascii=False, indent=2)
+    print(f"Saved timed transcript to: {json_path}")
+
     return full_text
 
 
 def list_recordings():
     """List all recordings."""
-    recordings_dir = Path("recordings")
-    if not recordings_dir.exists():
+    if not RECORDINGS_DIR.exists():
         print("No recordings directory found.")
         return []
 
-    files = sorted(recordings_dir.glob("*.wav"))
+    files = sorted(RECORDINGS_DIR.glob("*.wav"))
     if not files:
         print("No recordings found.")
         return []

@@ -19,9 +19,16 @@ def init_db():
             cleaned_text TEXT,
             confidence REAL,
             duration_seconds REAL,
+            language TEXT DEFAULT 'sv',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Add language column if it doesn't exist (migration for existing DBs)
+    try:
+        cursor.execute("ALTER TABLE transcripts ADD COLUMN language TEXT DEFAULT 'sv'")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
@@ -36,15 +43,15 @@ def init_db():
     conn.close()
 
 
-def save_transcript(raw_text: str, confidence: float = None, duration: float = None) -> int:
+def save_transcript(raw_text: str, confidence: float = None, duration: float = None, language: str = "sv") -> int:
     """Save a transcript segment. Returns the ID."""
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO transcripts (timestamp, raw_text, confidence, duration_seconds)
-        VALUES (?, ?, ?, ?)
-    """, (datetime.now().isoformat(), raw_text, confidence, duration))
+        INSERT INTO transcripts (timestamp, raw_text, confidence, duration_seconds, language)
+        VALUES (?, ?, ?, ?, ?)
+    """, (datetime.now().isoformat(), raw_text, confidence, duration, language))
 
     transcript_id = cursor.lastrowid
     conn.commit()

@@ -26,7 +26,7 @@ export interface Word {
   id: number;
   word: string;
   frequency: number;
-  status: 'new' | 'learning' | 'known' | 'ignored';
+  status: 'learning' | 'known';
   first_seen: string;
   last_seen: string;
   explanation?: string;
@@ -64,7 +64,6 @@ export async function updateWordStatus(word: string, status: string): Promise<vo
 
 export interface Stats {
   total_words: number;
-  new: number;
   learning: number;
   known: number;
   total_occurrences: number;
@@ -78,7 +77,6 @@ export interface Progress {
   total_words: number;
   known: number;
   learning: number;
-  new: number;
   progress_percent: number;
 }
 
@@ -142,15 +140,25 @@ export interface Transcript {
   cleaned_text: string | null;
   confidence: number;
   duration_seconds: number;
+  language: 'sv' | 'en';
+}
+
+export interface TranscriptStats {
+  total: number;
+  swedish: number;
+  english: number;
 }
 
 export interface TranscriptsResponse {
   transcripts: Transcript[];
   total: number;
+  stats: TranscriptStats;
 }
 
-export async function getTranscripts(limit = 50, offset = 0): Promise<TranscriptsResponse> {
-  return request(`/transcripts?limit=${limit}&offset=${offset}`);
+export async function getTranscripts(limit = 50, offset = 0, language?: string): Promise<TranscriptsResponse> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (language) params.set('language', language);
+  return request(`/transcripts?${params}`);
 }
 
 // ============== Recordings ==============
@@ -166,9 +174,77 @@ export async function getRecordings(): Promise<{ recordings: Recording[] }> {
   return request('/recordings');
 }
 
+export interface TranscriptSegment {
+  text: string;
+  language: 'sv' | 'en';
+  start: number | null;
+  end: number | null;
+}
+
+export interface RecordingTranscript {
+  full_text: string;
+  duration: number | null;
+  segments: TranscriptSegment[];
+  stats: {
+    total: number;
+    swedish: number;
+    english: number;
+  };
+}
+
+export async function getRecordingTranscript(filename: string): Promise<RecordingTranscript> {
+  return request(`/recordings/${encodeURIComponent(filename)}/transcript`);
+}
+
+export function getRecordingAudioUrl(filename: string): string {
+  return `${API_BASE}/recordings/${encodeURIComponent(filename)}/audio`;
+}
+
 export async function transcribeFile(filepath: string): Promise<void> {
   await request('/transcribe', {
     method: 'POST',
     body: JSON.stringify({ filepath }),
+  });
+}
+
+// ============== Recording Control ==============
+
+export interface AudioDevice {
+  id: number;
+  name: string;
+  sample_rate: number;
+  channels: number;
+}
+
+export async function getAudioDevices(): Promise<{ devices: AudioDevice[] }> {
+  return request('/audio-devices');
+}
+
+export interface RecordingStatus {
+  recording: boolean;
+  device_id: number | null;
+  start_time: string | null;
+}
+
+export async function getRecordingStatus(): Promise<RecordingStatus> {
+  return request('/recording/status');
+}
+
+export async function startRecording(device_id: number): Promise<{ status: string; device_id: number }> {
+  return request('/recording/start', {
+    method: 'POST',
+    body: JSON.stringify({ device_id }),
+  });
+}
+
+export async function stopRecording(): Promise<{ status: string; filepath: string }> {
+  return request('/recording/stop', {
+    method: 'POST',
+  });
+}
+
+export async function rebuildVocabulary(): Promise<{ status: string }> {
+  return request('/vocabulary/rebuild', {
+    method: 'POST',
   });
 }

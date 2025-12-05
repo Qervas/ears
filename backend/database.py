@@ -39,7 +39,7 @@ class Database:
                 frequency INTEGER DEFAULT 1,
                 first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'new',
+                status TEXT DEFAULT 'learning',
                 explanation TEXT
             )
         """)
@@ -101,6 +101,8 @@ class Database:
                 query += " ORDER BY word ASC"
             elif sort == "recent":
                 query += " ORDER BY last_seen DESC"
+            elif sort == "random":
+                query += " ORDER BY RANDOM()"
 
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
@@ -164,18 +166,47 @@ class Database:
 
     # ============== Transcripts ==============
 
-    async def get_transcripts(self, limit: int = 50, offset: int = 0) -> list:
+    async def get_transcripts(self, limit: int = 50, offset: int = 0, language: str = None) -> list:
         """Get transcript segments."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            cursor = await db.execute("""
-                SELECT id, timestamp, raw_text, cleaned_text, confidence, duration_seconds
+            query = """
+                SELECT id, timestamp, raw_text, cleaned_text, confidence, duration_seconds,
+                       COALESCE(language, 'sv') as language
                 FROM transcripts
-                ORDER BY id DESC
-                LIMIT ? OFFSET ?
-            """, (limit, offset))
+            """
+            params = []
+            if language:
+                query += " WHERE language = ?"
+                params.append(language)
+            query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor = await db.execute(query, params)
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def get_transcript_stats(self) -> dict:
+        """Get transcript statistics by language."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM transcripts")
+            total = (await cursor.fetchone())[0]
+
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM transcripts WHERE COALESCE(language, 'sv') = 'sv'"
+            )
+            swedish = (await cursor.fetchone())[0]
+
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM transcripts WHERE language = 'en'"
+            )
+            english = (await cursor.fetchone())[0]
+
+            return {
+                "total": total,
+                "swedish": swedish,
+                "english": english
+            }
 
     async def get_transcript_count(self) -> int:
         """Get total transcript count."""
@@ -193,11 +224,6 @@ class Database:
             total = (await cursor.fetchone())[0]
 
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM vocabulary WHERE status = 'new'"
-            )
-            new = (await cursor.fetchone())[0]
-
-            cursor = await db.execute(
                 "SELECT COUNT(*) FROM vocabulary WHERE status = 'learning'"
             )
             learning = (await cursor.fetchone())[0]
@@ -212,7 +238,6 @@ class Database:
 
             return {
                 "total_words": total,
-                "new": new,
                 "learning": learning,
                 "known": known,
                 "total_occurrences": total_occurrences
@@ -224,15 +249,13 @@ class Database:
         """Get words for learning session."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            # Prioritize: learning words first, then high-frequency new words
+            # Get learning words sorted by frequency
             cursor = await db.execute("""
                 SELECT v.id, v.word, v.frequency, v.status, v.explanation,
                        (SELECT context FROM word_contexts wc WHERE wc.word_id = v.id LIMIT 1) as example
                 FROM vocabulary v
-                WHERE v.status IN ('learning', 'new')
-                ORDER BY
-                    CASE v.status WHEN 'learning' THEN 0 ELSE 1 END,
-                    v.frequency DESC
+                WHERE v.status = 'learning'
+                ORDER BY v.frequency DESC
                 LIMIT ?
             """, (count,))
             rows = await cursor.fetchall()

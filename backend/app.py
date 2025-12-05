@@ -1,6 +1,6 @@
 """FastAPI backend for Ears language learning app."""
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -9,9 +9,20 @@ import asyncio
 import edge_tts
 import tempfile
 import os
+import sounddevice as sd
+from datetime import datetime
 
 from database import Database
 from config import LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY
+from recorder import Recorder
+
+# Base directory (where app.py is located)
+BASE_DIR = Path(__file__).parent.resolve()
+RECORDINGS_DIR = BASE_DIR / "recordings"
+
+# Global recorder instance
+recorder_instance: Recorder | None = None
+recording_status = {"recording": False, "device_id": None, "start_time": None}
 
 app = FastAPI(title="Ears", description="Language learning from real content")
 
@@ -28,7 +39,7 @@ app.add_middleware(
 db = Database()
 
 # TTS cache directory
-TTS_CACHE = Path("tts_cache")
+TTS_CACHE = BASE_DIR / "tts_cache"
 TTS_CACHE.mkdir(exist_ok=True)
 
 
@@ -80,6 +91,12 @@ async def get_vocabulary(
     return {"words": words, "total": total}
 
 
+@app.get("/api/vocabulary/stats")
+async def get_vocabulary_stats():
+    """Get vocabulary statistics."""
+    return await db.get_stats()
+
+
 @app.get("/api/vocabulary/{word}")
 async def get_word(word: str):
     """Get word details with contexts."""
@@ -97,20 +114,21 @@ async def update_word_status(word: str, data: WordStatus):
     return {"success": True}
 
 
-@app.get("/api/vocabulary/stats")
-async def get_vocabulary_stats():
-    """Get vocabulary statistics."""
-    return await db.get_stats()
-
-
 # ============== Transcripts ==============
 
+@app.get("/api/transcripts/stats")
+async def get_transcript_stats():
+    """Get transcript statistics by language."""
+    return await db.get_transcript_stats()
+
+
 @app.get("/api/transcripts")
-async def get_transcripts(limit: int = 50, offset: int = 0):
+async def get_transcripts(limit: int = 50, offset: int = 0, language: str = None):
     """Get transcript segments."""
-    transcripts = await db.get_transcripts(limit=limit, offset=offset)
+    transcripts = await db.get_transcripts(limit=limit, offset=offset, language=language)
     total = await db.get_transcript_count()
-    return {"transcripts": transcripts, "total": total}
+    stats = await db.get_transcript_stats()
+    return {"transcripts": transcripts, "total": total, "stats": stats}
 
 
 @app.post("/api/transcribe")
@@ -136,6 +154,17 @@ async def run_transcription(filepath: str):
 
 # ============== TTS ==============
 
+@app.get("/api/tts/voices")
+async def get_tts_voices():
+    """Get available Swedish TTS voices."""
+    return {
+        "voices": [
+            {"id": "sv-SE-SofieNeural", "name": "Sofie (Female)"},
+            {"id": "sv-SE-MattiasNeural", "name": "Mattias (Male)"},
+        ]
+    }
+
+
 @app.get("/api/tts/{word}")
 async def text_to_speech(word: str, voice: str = "sv-SE-SofieNeural"):
     """Generate TTS audio for a word or phrase."""
@@ -148,17 +177,6 @@ async def text_to_speech(word: str, voice: str = "sv-SE-SofieNeural"):
         await communicate.save(str(cache_file))
 
     return FileResponse(cache_file, media_type="audio/mpeg")
-
-
-@app.get("/api/tts/voices")
-async def get_tts_voices():
-    """Get available Swedish TTS voices."""
-    return {
-        "voices": [
-            {"id": "sv-SE-SofieNeural", "name": "Sofie (Female)"},
-            {"id": "sv-SE-MattiasNeural", "name": "Mattias (Male)"},
-        ]
-    }
 
 
 # ============== AI / LLM ==============
@@ -231,7 +249,7 @@ async def chat(data: ChatMessage):
 async def get_learning_session(mode: str = "vocabulary", count: int = 10):
     """Get a learning session with words to practice."""
     if mode == "vocabulary":
-        # Get words marked as 'learning' or high-frequency 'new' words
+        # Get words marked as 'learning'
         words = await db.get_learning_words(count)
         return {"mode": mode, "words": words}
     elif mode == "sentences":
@@ -250,7 +268,6 @@ async def get_learning_progress():
         "total_words": stats["total_words"],
         "known": stats["known"],
         "learning": stats["learning"],
-        "new": stats["new"],
         "progress_percent": round(stats["known"] / max(stats["total_words"], 1) * 100, 1)
     }
 
@@ -260,20 +277,221 @@ async def get_learning_progress():
 @app.get("/api/recordings")
 async def list_recordings():
     """List available recordings."""
-    recordings_dir = Path("recordings")
-    if not recordings_dir.exists():
+    if not RECORDINGS_DIR.exists():
         return {"recordings": []}
 
     files = []
-    for f in sorted(recordings_dir.glob("*.wav")):
+    for f in sorted(RECORDINGS_DIR.glob("*.wav"), reverse=True):  # Most recent first
+        txt_file = RECORDINGS_DIR / f"{f.stem}.txt"
         files.append({
             "name": f.name,
             "path": str(f),
             "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
-            "has_transcript": (recordings_dir / f"{f.stem}.txt").exists()
+            "has_transcript": txt_file.exists()
         })
 
     return {"recordings": files}
+
+
+@app.get("/api/recordings/{filename}/transcript")
+async def get_recording_transcript(filename: str):
+    """Get transcript content for a specific recording with timestamps."""
+    import json as json_module
+    from recorder import detect_segment_language
+
+    wav_file = RECORDINGS_DIR / filename
+    json_file = RECORDINGS_DIR / f"{wav_file.stem}.json"
+    txt_file = RECORDINGS_DIR / f"{wav_file.stem}.txt"
+
+    if not wav_file.exists():
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    # Prefer JSON file with timestamps if available
+    if json_file.exists():
+        data = json_module.loads(json_file.read_text(encoding='utf-8'))
+        full_text = " ".join(s["text"] for s in data["segments"])
+        return {
+            "full_text": full_text,
+            "duration": data.get("duration", 0),
+            "segments": data["segments"],
+            "stats": data["stats"]
+        }
+
+    # Fallback to txt file (no timestamps)
+    if not txt_file.exists():
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    full_text = txt_file.read_text(encoding='utf-8')
+
+    # Split into sentences and detect language for each
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', full_text)
+    segments = []
+
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if sentence:
+            lang = detect_segment_language(sentence)
+            segments.append({
+                "text": sentence,
+                "language": lang,
+                "start": None,
+                "end": None
+            })
+
+    sv_count = sum(1 for s in segments if s["language"] == "sv")
+    en_count = len(segments) - sv_count
+
+    return {
+        "full_text": full_text,
+        "duration": None,
+        "segments": segments,
+        "stats": {
+            "total": len(segments),
+            "swedish": sv_count,
+            "english": en_count
+        }
+    }
+
+
+@app.get("/api/recordings/{filename}/audio")
+async def get_recording_audio(filename: str, request: Request):
+    """Serve the audio file for playback with range support."""
+    from fastapi.responses import StreamingResponse
+
+    wav_file = RECORDINGS_DIR / filename
+    if not wav_file.exists():
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    file_size = wav_file.stat().st_size
+
+    # Handle range requests for proper streaming
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse range header: "bytes=start-end"
+        range_match = range_header.replace("bytes=", "").split("-")
+        start = int(range_match[0]) if range_match[0] else 0
+        end = int(range_match[1]) if range_match[1] else file_size - 1
+
+        if start >= file_size:
+            raise HTTPException(status_code=416, detail="Range not satisfiable")
+
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(wav_file, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(8192, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type="audio/wav",
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            }
+        )
+
+    # No range header - return full file
+    return FileResponse(
+        wav_file,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes"}
+    )
+
+
+# ============== Recording Control ==============
+
+@app.get("/api/audio-devices")
+async def get_audio_devices():
+    """List available audio input devices."""
+    devices = sd.query_devices()
+    input_devices = []
+    for i, dev in enumerate(devices):
+        if dev['max_input_channels'] > 0:
+            input_devices.append({
+                "id": i,
+                "name": dev['name'],
+                "sample_rate": int(dev['default_samplerate']),
+                "channels": dev['max_input_channels']
+            })
+    return {"devices": input_devices}
+
+
+class RecordingStartRequest(BaseModel):
+    device_id: int
+
+
+@app.post("/api/recording/start")
+async def start_recording(data: RecordingStartRequest):
+    """Start recording from specified device."""
+    global recorder_instance, recording_status
+
+    if recording_status["recording"]:
+        raise HTTPException(status_code=400, detail="Already recording")
+
+    try:
+        recorder_instance = Recorder()
+        recorder_instance.start(data.device_id)
+        recording_status = {
+            "recording": True,
+            "device_id": data.device_id,
+            "start_time": datetime.now().isoformat()
+        }
+        return {"status": "recording_started", "device_id": data.device_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start recording: {str(e)}")
+
+
+@app.post("/api/recording/stop")
+async def stop_recording(background_tasks: BackgroundTasks):
+    """Stop recording and optionally transcribe."""
+    global recorder_instance, recording_status
+
+    if not recording_status["recording"] or recorder_instance is None:
+        raise HTTPException(status_code=400, detail="Not currently recording")
+
+    try:
+        filepath = recorder_instance.stop()
+        recording_status = {"recording": False, "device_id": None, "start_time": None}
+        recorder_instance = None
+
+        if filepath:
+            return {"status": "recording_stopped", "filepath": filepath}
+        else:
+            raise HTTPException(status_code=500, detail="No audio recorded")
+    except Exception as e:
+        recording_status = {"recording": False, "device_id": None, "start_time": None}
+        recorder_instance = None
+        raise HTTPException(status_code=500, detail=f"Failed to stop recording: {str(e)}")
+
+
+@app.get("/api/recording/status")
+async def get_recording_status():
+    """Get current recording status."""
+    return recording_status
+
+
+@app.post("/api/vocabulary/rebuild")
+async def rebuild_vocabulary():
+    """Rebuild vocabulary from all transcripts."""
+    from vocabulary import build_from_transcripts
+    try:
+        build_from_transcripts()
+        return {"status": "vocabulary_rebuilt"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to rebuild vocabulary: {str(e)}")
 
 
 if __name__ == "__main__":

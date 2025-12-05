@@ -4,22 +4,55 @@
   import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord } from '../lib/api';
   import type { Word } from '../lib/api';
 
-  let sortBy = 'frequency';
   let searchQuery = '';
   let explanation = '';
   let explaining = false;
+  let loadingMore = false;
+  let viewMode: 'dictionary' | 'shuffle' = 'dictionary';
+  let dictionarySort: 'alphabetical' | 'frequency' = 'frequency';
+  let shuffleSort: 'random' | 'frequency' = 'random';
+  const PAGE_SIZE = 100;
 
-  async function loadVocabulary() {
-    vocabularyLoading.set(true);
+  // Compute current sort based on mode
+  $: currentSort = viewMode === 'dictionary' ? dictionarySort : shuffleSort;
+
+  async function loadVocabulary(append = false) {
+    if (append) {
+      loadingMore = true;
+    } else {
+      vocabularyLoading.set(true);
+    }
     try {
-      const data = await getVocabulary(100, 0, $vocabularyFilter ?? undefined, sortBy);
-      vocabulary.set(data.words);
+      const offset = append ? $vocabulary.length : 0;
+      const data = await getVocabulary(PAGE_SIZE, offset, $vocabularyFilter ?? undefined, currentSort);
+      if (append) {
+        vocabulary.update(v => [...v, ...data.words]);
+      } else {
+        vocabulary.set(data.words);
+      }
       vocabularyTotal.set(data.total);
     } catch (e) {
       console.error('Failed to load vocabulary:', e);
     } finally {
       vocabularyLoading.set(false);
+      loadingMore = false;
     }
+  }
+
+  function loadMore() {
+    loadVocabulary(true);
+  }
+
+  $: hasMore = $vocabulary.length < $vocabularyTotal;
+
+  function switchMode(mode: 'dictionary' | 'shuffle') {
+    viewMode = mode;
+  }
+
+  async function reshuffle() {
+    // Force reload with random sort
+    shuffleSort = 'random';
+    await loadVocabulary(false);
   }
 
   async function selectWord(word: Word) {
@@ -62,8 +95,8 @@
     ? $vocabulary.filter(w => w.word.includes(searchQuery.toLowerCase()))
     : $vocabulary;
 
-  onMount(loadVocabulary);
-  $: $vocabularyFilter, sortBy, loadVocabulary();
+  onMount(() => loadVocabulary(false));
+  $: $vocabularyFilter, currentSort, loadVocabulary(false);
 </script>
 
 <div class="flex h-full">
@@ -84,6 +117,47 @@
         class="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-primary-500"
       />
 
+      <!-- Mode Switcher -->
+      <div class="flex gap-2">
+        <button
+          class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {viewMode === 'dictionary' ? 'bg-primary-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}"
+          on:click={() => switchMode('dictionary')}
+        >
+          Dictionary
+        </button>
+        <button
+          class="flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors
+                 {viewMode === 'shuffle' ? 'bg-primary-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}"
+          on:click={() => switchMode('shuffle')}
+        >
+          Shuffle
+        </button>
+      </div>
+
+      <!-- Sort options based on mode -->
+      <div class="flex gap-2">
+        {#if viewMode === 'dictionary'}
+          <button
+            class="flex-1 px-3 py-1 rounded text-sm {dictionarySort === 'alphabetical' ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-400'}"
+            on:click={() => dictionarySort = 'alphabetical'}
+          >A-Z</button>
+          <button
+            class="flex-1 px-3 py-1 rounded text-sm {dictionarySort === 'frequency' ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-400'}"
+            on:click={() => dictionarySort = 'frequency'}
+          >Frequency</button>
+        {:else}
+          <button
+            class="flex-1 px-3 py-1 rounded text-sm {shuffleSort === 'random' ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-400'}"
+            on:click={() => shuffleSort = 'random'}
+          >Random</button>
+          <button
+            class="flex-1 px-3 py-1 rounded text-sm {shuffleSort === 'frequency' ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-400'}"
+            on:click={() => shuffleSort = 'frequency'}
+          >By Frequency</button>
+        {/if}
+      </div>
+
       <!-- Filters -->
       <div class="flex gap-2">
         <button
@@ -91,28 +165,24 @@
           on:click={() => vocabularyFilter.set(null)}
         >All</button>
         <button
-          class="px-3 py-1 rounded-full text-sm {$vocabularyFilter === 'new' ? 'bg-primary-600 text-white' : 'bg-slate-700 text-slate-300'}"
-          on:click={() => vocabularyFilter.set('new')}
-        >New</button>
-        <button
-          class="px-3 py-1 rounded-full text-sm {$vocabularyFilter === 'learning' ? 'bg-primary-600 text-white' : 'bg-slate-700 text-slate-300'}"
+          class="px-3 py-1 rounded-full text-sm {$vocabularyFilter === 'learning' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300'}"
           on:click={() => vocabularyFilter.set('learning')}
         >Learning</button>
         <button
-          class="px-3 py-1 rounded-full text-sm {$vocabularyFilter === 'known' ? 'bg-primary-600 text-white' : 'bg-slate-700 text-slate-300'}"
+          class="px-3 py-1 rounded-full text-sm {$vocabularyFilter === 'known' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300'}"
           on:click={() => vocabularyFilter.set('known')}
         >Known</button>
       </div>
 
-      <!-- Sort -->
-      <select
-        bind:value={sortBy}
-        class="px-3 py-1 bg-slate-700 border border-slate-600 rounded text-slate-300 text-sm"
-      >
-        <option value="frequency">Most frequent</option>
-        <option value="recent">Most recent</option>
-        <option value="alphabetical">Alphabetical</option>
-      </select>
+      <!-- Reshuffle button (only in shuffle mode with random sort) -->
+      {#if viewMode === 'shuffle' && shuffleSort === 'random'}
+        <button
+          class="w-full px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm"
+          on:click={reshuffle}
+        >
+          Reshuffle
+        </button>
+      {/if}
     </div>
 
     <!-- Word List -->
@@ -134,9 +204,7 @@
               <div class="flex items-center gap-2 mt-1">
                 <span class="px-2 py-0.5 rounded text-xs
                   {word.status === 'known' ? 'bg-green-900 text-green-300' :
-                   word.status === 'learning' ? 'bg-yellow-900 text-yellow-300' :
-                   word.status === 'ignored' ? 'bg-slate-700 text-slate-500' :
-                   'bg-slate-700 text-slate-400'}">
+                   'bg-yellow-900 text-yellow-300'}">
                   {word.status}
                 </span>
               </div>
@@ -145,6 +213,23 @@
             <div class="p-8 text-center text-slate-500">No words found</div>
           {/each}
         </div>
+
+        <!-- Load More Button -->
+        {#if hasMore}
+          <div class="p-4 border-t border-slate-700">
+            <button
+              class="w-full py-2 px-4 bg-slate-700 hover:bg-slate-600 text-white rounded-lg disabled:opacity-50"
+              on:click={loadMore}
+              disabled={loadingMore}
+            >
+              {#if loadingMore}
+                Loading...
+              {:else}
+                Load More ({$vocabulary.length} / {$vocabularyTotal})
+              {/if}
+            </button>
+          </div>
+        {/if}
       {/if}
     </div>
   </div>
@@ -175,10 +260,6 @@
         <!-- Status Buttons -->
         <div class="flex gap-2">
           <button
-            class="px-4 py-2 rounded-lg {$selectedWord.status === 'new' ? 'bg-slate-600 text-white' : 'bg-slate-700 text-slate-300'}"
-            on:click={() => setStatus($selectedWord.word, 'new')}
-          >New</button>
-          <button
             class="px-4 py-2 rounded-lg {$selectedWord.status === 'learning' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300'}"
             on:click={() => setStatus($selectedWord.word, 'learning')}
           >Learning</button>
@@ -186,10 +267,6 @@
             class="px-4 py-2 rounded-lg {$selectedWord.status === 'known' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300'}"
             on:click={() => setStatus($selectedWord.word, 'known')}
           >Known</button>
-          <button
-            class="px-4 py-2 rounded-lg {$selectedWord.status === 'ignored' ? 'bg-slate-500 text-white' : 'bg-slate-700 text-slate-300'}"
-            on:click={() => setStatus($selectedWord.word, 'ignored')}
-          >Ignore</button>
         </div>
 
         <!-- Contexts -->
