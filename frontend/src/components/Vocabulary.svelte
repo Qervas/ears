@@ -9,7 +9,7 @@
   let explaining = false;
   let loadingMore = false;
   let generatingBulk = false;
-  let bulkStatus: BulkGenerationStatus = { running: false, current: 0, total: 0, completed: 0, failed: 0 };
+  let bulkStatus: BulkGenerationStatus = { running: false, current: 0, total: 0, completed: 0, failed: 0, failed_words: [] };
   let statusPollInterval: number | null = null;
   let currentGenerationMode: 'missing' | 'all' | null = null;  // Track which generation mode is running
   let viewMode: 'dictionary' | 'shuffle' = 'dictionary';
@@ -128,7 +128,29 @@
         }
 
         const modeText = mode === 'all' ? 'Regenerated ALL' : 'Generated';
-        alert(`✓ ${modeText} ${bulkStatus.completed} explanations\n${bulkStatus.failed > 0 ? `✗ Failed: ${bulkStatus.failed}` : ''}`);
+
+        // Build completion message
+        let message = `✓ ${modeText} ${bulkStatus.completed} explanations`;
+
+        if (bulkStatus.failed > 0) {
+          message += `\n\n✗ Failed: ${bulkStatus.failed} words`;
+
+          // Show first 5 failed words
+          if (bulkStatus.failed_words && bulkStatus.failed_words.length > 0) {
+            message += '\n\nFailed words:';
+            const showCount = Math.min(5, bulkStatus.failed_words.length);
+            for (let i = 0; i < showCount; i++) {
+              const item = bulkStatus.failed_words[i];
+              message += `\n  • ${item.word} (${item.error})`;
+            }
+            if (bulkStatus.failed_words.length > 5) {
+              message += `\n  ... and ${bulkStatus.failed_words.length - 5} more`;
+            }
+            message += '\n\nCheck backend console for full details.';
+          }
+        }
+
+        alert(message);
       }
     } catch (e) {
       console.error('Failed to poll bulk status:', e);

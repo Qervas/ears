@@ -172,6 +172,7 @@ export interface BulkGenerationStatus {
   total: number;
   completed: number;
   failed: number;
+  failed_words?: Array<{ word: string; error: string }>;
 }
 
 export async function startBulkGeneration(): Promise<{ message: string; count: number }> {

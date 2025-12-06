@@ -31,7 +31,8 @@ bulk_generation_status = {
     "current": 0,
     "total": 0,
     "completed": 0,
-    "failed": 0
+    "failed": 0,
+    "failed_words": []  # Track which words failed
 }
 
 app = FastAPI(title="Ears", description="Language learning from real content")
@@ -110,21 +111,34 @@ def get_ai_client():
     settings = load_settings()
     provider = settings.get("ai_provider", "lm-studio")
 
+    # Set timeout to 60 seconds for all providers
+    # This prevents hanging on slow/unresponsive APIs
+    timeout = 60.0
+
     if provider == "lm-studio":
         return OpenAI(
             base_url=settings.get("lm_studio_url", "http://localhost:1234/v1"),
-            api_key="lm-studio"
+            api_key="lm-studio",
+            timeout=timeout
         )
     elif provider == "copilot-api":
         return OpenAI(
             base_url=settings.get("copilot_api_url", "http://localhost:4141") + "/v1",
-            api_key="copilot"
+            api_key="copilot",
+            timeout=timeout
         )
     elif provider == "openai":
-        return OpenAI(api_key=settings.get("openai_api_key", ""))
+        return OpenAI(
+            api_key=settings.get("openai_api_key", ""),
+            timeout=timeout
+        )
     else:
         # Default to LM Studio
-        return OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
+        return OpenAI(
+            base_url="http://localhost:1234/v1",
+            api_key="lm-studio",
+            timeout=timeout
+        )
 
 
 def get_ai_model():
@@ -255,6 +269,7 @@ async def generate_explanations_background(words: list[str]):
     bulk_generation_status["current"] = 0
     bulk_generation_status["completed"] = 0
     bulk_generation_status["failed"] = 0
+    bulk_generation_status["failed_words"] = []  # Reset failed words list
 
     client = get_ai_client()
 
@@ -306,25 +321,41 @@ Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related wor
                 print(f"✓ Generated explanation for: {word} ({i+1}/{len(words)})")
             except json_module.JSONDecodeError:
                 bulk_generation_status["failed"] += 1
+                bulk_generation_status["failed_words"].append({"word": word, "error": "Invalid JSON response"})
                 print(f"✗ Invalid JSON for: {word}")
 
         except Exception as e:
             error_msg = str(e)
             bulk_generation_status["failed"] += 1
 
-            # Provide more context for common errors
+            # Categorize error type for user-friendly display
             if "timeout" in error_msg.lower() or "headers timeout" in error_msg.lower():
+                error_type = "Timeout"
                 print(f"✗ Timeout error for {word}: AI provider took too long to respond ({i+1}/{len(words)})")
             elif "connection" in error_msg.lower() or "fetch failed" in error_msg.lower():
+                error_type = "Connection error"
                 print(f"✗ Connection error for {word}: AI provider unreachable ({i+1}/{len(words)})")
             else:
+                error_type = error_msg[:50]  # First 50 chars of error
                 print(f"✗ Error generating for {word}: {error_msg} ({i+1}/{len(words)})")
+
+            # Track failed word with error details
+            bulk_generation_status["failed_words"].append({"word": word, "error": error_type})
 
             # Small delay before continuing to avoid hammering a failing service
             import asyncio
             await asyncio.sleep(1)
 
     print(f"\n🎉 Bulk generation complete: {bulk_generation_status['completed']} succeeded, {bulk_generation_status['failed']} failed")
+
+    # Print failed words summary if any
+    if bulk_generation_status["failed_words"]:
+        print("\n❌ Failed words:")
+        for item in bulk_generation_status["failed_words"][:10]:  # Show first 10
+            print(f"   - {item['word']}: {item['error']}")
+        if len(bulk_generation_status["failed_words"]) > 10:
+            print(f"   ... and {len(bulk_generation_status['failed_words']) - 10} more")
+
     bulk_generation_status["running"] = False
 
 
