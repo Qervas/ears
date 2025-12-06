@@ -10,6 +10,8 @@
   let openaiApiKey = '';
   let saving = false;
   let saveMessage = '';
+  let backups: Array<{ filename: string; size_mb: number; created: string }> = [];
+  let creatingBackup = false;
 
   const freeModels = [
     'grok-code-fast-1',
@@ -33,7 +35,20 @@
     } catch (e) {
       console.error('Failed to load settings:', e);
     }
+
+    // Load backups list
+    await loadBackups();
   });
+
+  async function loadBackups() {
+    try {
+      const response = await fetch('http://localhost:8000/api/database/backups');
+      const data = await response.json();
+      backups = data.backups || [];
+    } catch (e) {
+      console.error('Failed to load backups:', e);
+    }
+  }
 
   async function saveSettings() {
     saving = true;
@@ -81,6 +96,32 @@
       console.error('Connection test error:', e);
       alert(`✗ Connection test failed\n\nError: ${e}\n\nMake sure the backend server is running.`);
     }
+  }
+
+  async function createBackup() {
+    creatingBackup = true;
+    try {
+      const response = await fetch('http://localhost:8000/api/database/backup', {
+        method: 'POST',
+      });
+      const data = await response.json();
+
+      if (response.ok) {
+        alert(`✓ Backup created successfully!\n\nFile: ${data.path}`);
+        await loadBackups();
+      } else {
+        alert('Failed to create backup');
+      }
+    } catch (e) {
+      console.error('Backup creation error:', e);
+      alert(`Failed to create backup: ${e}`);
+    } finally {
+      creatingBackup = false;
+    }
+  }
+
+  function downloadBackup(filename: string) {
+    window.open(`http://localhost:8000/api/database/download-backup/${filename}`, '_blank');
   }
 </script>
 
@@ -227,6 +268,49 @@
           </div>
         {/if}
       </div>
+    </div>
+
+    <!-- Database Backups Section -->
+    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
+      <h2 class="text-xl font-semibold text-white mb-4">📦 Database Backups</h2>
+
+      <p class="text-sm text-slate-400 mb-4">
+        Automatic backups are created on startup and after bulk generation. You can also create manual backups anytime.
+      </p>
+
+      <button
+        on:click={createBackup}
+        disabled={creatingBackup}
+        class="mb-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium rounded-lg transition-colors"
+      >
+        {creatingBackup ? 'Creating...' : '💾 Create Manual Backup'}
+      </button>
+
+      {#if backups.length > 0}
+        <div class="space-y-2">
+          <h3 class="text-sm font-semibold text-slate-300">Available Backups ({backups.length})</h3>
+          <div class="max-h-64 overflow-y-auto space-y-2">
+            {#each backups as backup}
+              <div class="flex items-center justify-between p-3 bg-slate-900/50 rounded-lg border border-slate-700">
+                <div class="flex-1">
+                  <div class="text-sm text-white font-mono">{backup.filename}</div>
+                  <div class="text-xs text-slate-500">
+                    {backup.created} • {backup.size_mb} MB
+                  </div>
+                </div>
+                <button
+                  on:click={() => downloadBackup(backup.filename)}
+                  class="ml-4 px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded transition-colors"
+                >
+                  ⬇ Download
+                </button>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {:else}
+        <p class="text-sm text-slate-500">No backups found. Create one to get started!</p>
+      {/if}
     </div>
 
     <!-- Info Section -->

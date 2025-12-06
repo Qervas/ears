@@ -12,14 +12,25 @@ import os
 import json
 import sounddevice as sd
 from datetime import datetime
+import sys
+import warnings
 
 from database import Database
 from recorder import Recorder
+
+# Suppress Windows asyncio warnings (known harmless bug on Windows)
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    warnings.filterwarnings('ignore', category=RuntimeWarning, module='asyncio')
 
 # Base directory (where app.py is located)
 BASE_DIR = Path(__file__).parent.resolve()
 RECORDINGS_DIR = BASE_DIR / "recordings"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+BACKUP_DIR = BASE_DIR / "backups"
+
+# Ensure backup directory exists
+BACKUP_DIR.mkdir(exist_ok=True)
 
 # Global recorder instance
 recorder_instance: Recorder | None = None
@@ -54,6 +65,16 @@ TTS_CACHE = BASE_DIR / "tts_cache"
 TTS_CACHE.mkdir(exist_ok=True)
 
 
+# Startup event - create initial backup
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup."""
+    print("\n🚀 Starting Ears backend...")
+    print("📦 Creating startup database backup...")
+    create_database_backup()
+    print("✓ Ready!\n")
+
+
 # ============== Models ==============
 
 class WordStatus(BaseModel):
@@ -81,6 +102,37 @@ class SettingsUpdate(BaseModel):
     copilot_api_url: str = ""
     copilot_model: str = ""
     openai_api_key: str = ""
+
+
+# Helper functions for database backups
+def create_database_backup():
+    """Create a timestamped backup of the database."""
+    import shutil
+    from config import DATABASE_PATH
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = BACKUP_DIR / f"transcripts_backup_{timestamp}.db"
+
+    try:
+        shutil.copy2(DATABASE_PATH, backup_path)
+        print(f"✓ Database backup created: {backup_path.name}")
+
+        # Keep only last 10 backups
+        backups = sorted(BACKUP_DIR.glob("transcripts_backup_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old_backup in backups[10:]:
+            old_backup.unlink()
+            print(f"  Removed old backup: {old_backup.name}")
+
+        return str(backup_path)
+    except Exception as e:
+        print(f"✗ Failed to create backup: {e}")
+        return None
+
+
+def get_latest_backup():
+    """Get the most recent backup file."""
+    backups = sorted(BACKUP_DIR.glob("transcripts_backup_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return backups[0] if backups else None
 
 
 # Helper functions for settings
@@ -355,6 +407,11 @@ Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related wor
             print(f"   - {item['word']}: {item['error']}")
         if len(bulk_generation_status["failed_words"]) > 10:
             print(f"   ... and {len(bulk_generation_status['failed_words']) - 10} more")
+
+    # Create backup after bulk generation completes
+    if bulk_generation_status['completed'] > 0:
+        print("\n📦 Creating post-generation backup...")
+        create_database_backup()
 
     bulk_generation_status["running"] = False
 
@@ -1155,6 +1212,60 @@ async def test_ai_connection():
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+
+
+# ============== Database Backup Endpoints ==============
+
+@app.post("/api/database/backup")
+async def manual_backup():
+    """Create a manual database backup."""
+    backup_path = create_database_backup()
+    if backup_path:
+        return {
+            "success": True,
+            "message": "Backup created successfully",
+            "path": Path(backup_path).name
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to create backup")
+
+
+@app.get("/api/database/backups")
+async def list_backups():
+    """List all available database backups."""
+    backups = sorted(BACKUP_DIR.glob("transcripts_backup_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    backup_list = []
+    for backup in backups:
+        stat = backup.stat()
+        backup_list.append({
+            "filename": backup.name,
+            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+            "created": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    return {
+        "count": len(backup_list),
+        "backups": backup_list
+    }
+
+
+@app.get("/api/database/download-backup/{filename}")
+async def download_backup(filename: str):
+    """Download a specific backup file."""
+    # Validate filename to prevent directory traversal
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    backup_path = BACKUP_DIR / filename
+    if not backup_path.exists():
+        raise HTTPException(status_code=404, detail="Backup not found")
+
+    return FileResponse(
+        path=backup_path,
+        filename=filename,
+        media_type="application/octet-stream"
+    )
 
 
 if __name__ == "__main__":
