@@ -9,20 +9,30 @@ import asyncio
 import edge_tts
 import tempfile
 import os
+import json
 import sounddevice as sd
 from datetime import datetime
 
 from database import Database
-from config import LM_STUDIO_BASE_URL, LM_STUDIO_API_KEY
 from recorder import Recorder
 
 # Base directory (where app.py is located)
 BASE_DIR = Path(__file__).parent.resolve()
 RECORDINGS_DIR = BASE_DIR / "recordings"
+SETTINGS_FILE = BASE_DIR / "settings.json"
 
 # Global recorder instance
 recorder_instance: Recorder | None = None
 recording_status = {"recording": False, "device_id": None, "start_time": None}
+
+# Background task tracking for bulk explanation generation
+bulk_generation_status = {
+    "running": False,
+    "current": 0,
+    "total": 0,
+    "completed": 0,
+    "failed": 0
+}
 
 app = FastAPI(title="Ears", description="Language learning from real content")
 
@@ -62,6 +72,72 @@ class ChatMessage(BaseModel):
 class ExplanationRequest(BaseModel):
     word: str
     context: str = ""
+
+
+class SettingsUpdate(BaseModel):
+    ai_provider: str
+    lm_studio_url: str = ""
+    copilot_api_url: str = ""
+    copilot_model: str = ""
+    openai_api_key: str = ""
+
+
+# Helper functions for settings
+def load_settings():
+    """Load settings from JSON file."""
+    if SETTINGS_FILE.exists():
+        with open(SETTINGS_FILE, 'r') as f:
+            return json.load(f)
+    return {
+        "ai_provider": "lm-studio",
+        "lm_studio_url": "http://localhost:1234/v1",
+        "copilot_api_url": "http://localhost:4141",
+        "copilot_model": "gpt-4o-mini",
+        "openai_api_key": ""
+    }
+
+
+def save_settings(settings: dict):
+    """Save settings to JSON file."""
+    with open(SETTINGS_FILE, 'w') as f:
+        json.dump(settings, f, indent=2)
+
+
+def get_ai_client():
+    """Get OpenAI-compatible client based on current settings."""
+    from openai import OpenAI
+
+    settings = load_settings()
+    provider = settings.get("ai_provider", "lm-studio")
+
+    if provider == "lm-studio":
+        return OpenAI(
+            base_url=settings.get("lm_studio_url", "http://localhost:1234/v1"),
+            api_key="lm-studio"
+        )
+    elif provider == "copilot-api":
+        return OpenAI(
+            base_url=settings.get("copilot_api_url", "http://localhost:4141") + "/v1",
+            api_key="copilot"
+        )
+    elif provider == "openai":
+        return OpenAI(api_key=settings.get("openai_api_key", ""))
+    else:
+        # Default to LM Studio
+        return OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
+
+
+def get_ai_model():
+    """Get the appropriate model name based on current settings."""
+    settings = load_settings()
+    provider = settings.get("ai_provider", "lm-studio")
+
+    if provider == "copilot-api":
+        return settings.get("copilot_model", "gpt-4o-mini")
+    elif provider == "openai":
+        return "gpt-3.5-turbo"
+    else:
+        return "local-model"
 
 
 # ============== Health ==============
@@ -114,7 +190,6 @@ async def get_words_without_explanations():
 @app.post("/api/vocabulary/generate-explanation/{word}")
 async def generate_single_explanation(word: str):
     """Generate AI explanation for a single word."""
-    from openai import OpenAI
     import json as json_module
 
     # Get context examples
@@ -144,11 +219,11 @@ Provide a structured JSON explanation in this exact format:
 
 Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related words."""
 
-    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+    client = get_ai_client()
 
     try:
         response = client.chat.completions.create(
-            model="local-model",
+            model=get_ai_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=800,
@@ -168,6 +243,162 @@ Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related wor
     except Exception as e:
         print(f"Error generating explanation for {word}: {e}")
         return {"success": False, "word": word, "error": str(e)}
+
+
+async def generate_explanations_background(words: list[str]):
+    """Background task to generate explanations for multiple words."""
+    import json as json_module
+
+    global bulk_generation_status
+    bulk_generation_status["running"] = True
+    bulk_generation_status["total"] = len(words)
+    bulk_generation_status["current"] = 0
+    bulk_generation_status["completed"] = 0
+    bulk_generation_status["failed"] = 0
+
+    client = get_ai_client()
+
+    for i, word in enumerate(words):
+        bulk_generation_status["current"] = i + 1
+
+        try:
+            # Get context examples
+            contexts = await db.get_word_contexts(word, limit=2)
+            context = contexts[0] if contexts else ""
+
+            prompt = f"""You are a Swedish language teacher helping English speakers learn Swedish.
+
+Explain the Swedish word: "{word}"
+{f'Context where learner saw it: "{context}"' if context else ''}
+
+Provide a structured JSON explanation in this exact format:
+{{
+  "translation": "primary English translation",
+  "type": "word type (noun/verb/adjective/preposition/etc.)",
+  "usagePatterns": [
+    {{"pattern": "swedish phrase", "meaning": "english meaning", "category": "type like 'accompaniment' or 'instrument'"}},
+    {{"pattern": "another phrase", "meaning": "its meaning", "category": "category"}}
+  ],
+  "relatedWords": [
+    {{"word": "swedish word", "relation": "opposite/similar/related", "translation": "english"}},
+    {{"word": "another word", "relation": "type", "translation": "english"}}
+  ],
+  "tip": "One helpful sentence about usage or memory trick",
+  "note": "Cultural note or important grammar point (or null if none)"
+}}
+
+Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related words."""
+
+            response = client.chat.completions.create(
+                model=get_ai_model(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=800,
+            )
+
+            explanation_text = response.choices[0].message.content.strip()
+
+            # Try to parse as JSON
+            try:
+                json_module.loads(explanation_text)  # Validate JSON
+                await db.update_word_explanation(word, explanation_text)
+                bulk_generation_status["completed"] += 1
+                print(f"✓ Generated explanation for: {word} ({i+1}/{len(words)})")
+            except json_module.JSONDecodeError:
+                bulk_generation_status["failed"] += 1
+                print(f"✗ Invalid JSON for: {word}")
+
+        except Exception as e:
+            error_msg = str(e)
+            bulk_generation_status["failed"] += 1
+
+            # Provide more context for common errors
+            if "timeout" in error_msg.lower() or "headers timeout" in error_msg.lower():
+                print(f"✗ Timeout error for {word}: AI provider took too long to respond ({i+1}/{len(words)})")
+            elif "connection" in error_msg.lower() or "fetch failed" in error_msg.lower():
+                print(f"✗ Connection error for {word}: AI provider unreachable ({i+1}/{len(words)})")
+            else:
+                print(f"✗ Error generating for {word}: {error_msg} ({i+1}/{len(words)})")
+
+            # Small delay before continuing to avoid hammering a failing service
+            import asyncio
+            await asyncio.sleep(1)
+
+    print(f"\n🎉 Bulk generation complete: {bulk_generation_status['completed']} succeeded, {bulk_generation_status['failed']} failed")
+    bulk_generation_status["running"] = False
+
+
+@app.post("/api/vocabulary/generate-all-explanations")
+async def start_bulk_generation(background_tasks: BackgroundTasks):
+    """Start background task to generate explanations for all words without them."""
+    global bulk_generation_status
+
+    if bulk_generation_status["running"]:
+        raise HTTPException(status_code=409, detail="Bulk generation already running")
+
+    # Get words without explanations
+    total = await db.get_vocabulary_count()
+    words = await db.get_vocabulary(limit=total, offset=0)
+
+    # Count words with and without explanations
+    words_with_explanations = [w for w in words if w.get('explanation_json')]
+    words_without = [w['word'] for w in words if not w.get('explanation_json')]
+
+    print(f"\n📊 GENERATE MISSING - Database stats:")
+    print(f"   Total words: {total}")
+    print(f"   With explanations: {len(words_with_explanations)}")
+    print(f"   Without explanations: {len(words_without)}")
+    print(f"   Will process: {len(words_without)} words\n")
+
+    if not words_without:
+        return {"message": "No words need explanations", "count": 0}
+
+    # Start background task
+    background_tasks.add_task(generate_explanations_background, words_without)
+
+    return {
+        "message": "Bulk generation started",
+        "count": len(words_without)
+    }
+
+
+@app.post("/api/vocabulary/regenerate-all-explanations")
+async def start_regenerate_all(background_tasks: BackgroundTasks):
+    """Start background task to regenerate explanations for ALL words (overwrite existing)."""
+    global bulk_generation_status
+
+    if bulk_generation_status["running"]:
+        raise HTTPException(status_code=409, detail="Bulk generation already running")
+
+    # Get ALL words
+    total = await db.get_vocabulary_count()
+    words = await db.get_vocabulary(limit=total, offset=0)
+    all_words = [w['word'] for w in words]
+
+    # Count existing explanations for logging
+    words_with_explanations = [w for w in words if w.get('explanation_json')]
+
+    print(f"\n⚠️ REGENERATE ALL - Database stats:")
+    print(f"   Total words: {total}")
+    print(f"   Existing explanations: {len(words_with_explanations)} (will be overwritten!)")
+    print(f"   Will process: {len(all_words)} words\n")
+
+    if not all_words:
+        return {"message": "No words in vocabulary", "count": 0}
+
+    # Start background task
+    background_tasks.add_task(generate_explanations_background, all_words)
+
+    return {
+        "message": "Regeneration started",
+        "count": len(all_words)
+    }
+
+
+@app.get("/api/vocabulary/bulk-generation-status")
+async def get_bulk_generation_status():
+    """Get current status of bulk explanation generation."""
+    return bulk_generation_status
 
 
 @app.get("/api/vocabulary/{word}")
@@ -257,10 +488,9 @@ async def text_to_speech(word: str, voice: str = "sv-SE-SofieNeural"):
 @app.post("/api/explain")
 async def explain_word(data: ExplanationRequest):
     """Get AI explanation for a word with structured JSON output."""
-    from openai import OpenAI
     import json as json_module
 
-    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+    client = get_ai_client()
 
     # Get word frequency for context
     db = Database()
@@ -292,7 +522,7 @@ Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related wor
 
     try:
         response = client.chat.completions.create(
-            model="local-model",
+            model=get_ai_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=800,
@@ -319,9 +549,7 @@ Focus on practical, common usage. Include 2-3 usage patterns and 2-3 related wor
 @app.post("/api/chat")
 async def chat(data: ChatMessage):
     """Chat with AI tutor in Swedish."""
-    from openai import OpenAI
-
-    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+    client = get_ai_client()
 
     system_prompt = """You are a friendly Swedish language tutor.
 - Respond in Swedish with simple vocabulary
@@ -334,7 +562,7 @@ async def chat(data: ChatMessage):
 
     try:
         response = client.chat.completions.create(
-            model="local-model",
+            model=get_ai_model(),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": data.message}
@@ -519,7 +747,6 @@ async def get_grammar_patterns():
 @app.get("/api/learn/grammar-quiz")
 async def get_grammar_quiz(count: int = 10):
     """Generate grammar fill-in-the-blank quiz using AI."""
-    from openai import OpenAI
     import json as json_module
     import random
 
@@ -536,7 +763,7 @@ async def get_grammar_quiz(count: int = 10):
     questions = []
 
     # Use LLM to generate quiz questions
-    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key=LM_STUDIO_API_KEY)
+    client = get_ai_client()
 
     for pattern in selected_patterns:
         # Get 2-3 real examples from recordings
@@ -570,7 +797,7 @@ Respond with ONLY valid JSON (no markdown, no code blocks):
 
         try:
             response = client.chat.completions.create(
-                model="local-model",
+                model=get_ai_model(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
                 max_tokens=300,
@@ -831,6 +1058,72 @@ async def rebuild_vocabulary():
         return {"status": "vocabulary_rebuilt"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to rebuild vocabulary: {str(e)}")
+
+
+# ============== Settings ==============
+
+@app.get("/api/settings")
+async def get_settings():
+    """Get current AI provider settings."""
+    settings = load_settings()
+    # Don't send the full API key to frontend, just show if it's set
+    if settings.get("openai_api_key"):
+        settings["openai_api_key"] = "***" if settings["openai_api_key"] else ""
+    return settings
+
+
+@app.post("/api/settings")
+async def update_settings(settings: SettingsUpdate):
+    """Update AI provider settings."""
+    current = load_settings()
+
+    # Update settings
+    current["ai_provider"] = settings.ai_provider
+    if settings.lm_studio_url:
+        current["lm_studio_url"] = settings.lm_studio_url
+    if settings.copilot_api_url:
+        current["copilot_api_url"] = settings.copilot_api_url
+    if settings.copilot_model:
+        current["copilot_model"] = settings.copilot_model
+    if settings.openai_api_key and settings.openai_api_key != "***":
+        current["openai_api_key"] = settings.openai_api_key
+
+    save_settings(current)
+    return {"status": "settings_saved"}
+
+
+@app.get("/api/test-ai-connection")
+async def test_ai_connection():
+    """Test connection to the configured AI provider."""
+    try:
+        client = get_ai_client()
+        settings = load_settings()
+        provider = settings.get("ai_provider", "lm-studio")
+
+        # Use configured model
+        model = get_ai_model()
+
+        # Try a simple completion
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Say 'OK' if you can read this."}],
+            max_tokens=10,
+            temperature=0.1
+        )
+
+        return {
+            "success": True,
+            "provider": provider,
+            "model": response.model if hasattr(response, 'model') else None,
+            "response": response.choices[0].message.content
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 
 if __name__ == "__main__":

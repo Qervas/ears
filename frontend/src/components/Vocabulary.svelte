@@ -1,15 +1,17 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { vocabulary, vocabularyTotal, vocabularyLoading, vocabularyFilter, selectedWord } from '../lib/stores';
-  import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord, getWordsWithoutExplanations, generateSingleExplanation } from '../lib/api';
-  import type { Word } from '../lib/api';
+  import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord, startBulkGeneration, getBulkGenerationStatus } from '../lib/api';
+  import type { Word, BulkGenerationStatus } from '../lib/api';
 
   let searchQuery = '';
   let explanation: any = null;  // Can be string or structured object
   let explaining = false;
   let loadingMore = false;
   let generatingBulk = false;
-  let bulkProgress = { current: 0, total: 0 };
+  let bulkStatus: BulkGenerationStatus = { running: false, current: 0, total: 0, completed: 0, failed: 0 };
+  let statusPollInterval: number | null = null;
+  let currentGenerationMode: 'missing' | 'all' | null = null;  // Track which generation mode is running
   let viewMode: 'dictionary' | 'shuffle' = 'dictionary';
   let dictionarySort: 'alphabetical' | 'frequency' = 'frequency';
   let shuffleSort: 'random' | 'frequency' = 'random';
@@ -104,58 +106,113 @@
     playTTS(text).catch(console.error);
   }
 
+  async function pollBulkStatus() {
+    try {
+      bulkStatus = await getBulkGenerationStatus();
+
+      if (!bulkStatus.running && generatingBulk) {
+        // Generation just finished
+        const mode = currentGenerationMode;
+        generatingBulk = false;
+        currentGenerationMode = null;
+
+        if (statusPollInterval) {
+          clearInterval(statusPollInterval);
+          statusPollInterval = null;
+        }
+
+        // Reload vocabulary to show updated explanations
+        await loadVocabulary(false);
+        if ($selectedWord) {
+          await selectWord($selectedWord);
+        }
+
+        const modeText = mode === 'all' ? 'Regenerated ALL' : 'Generated';
+        alert(`✓ ${modeText} ${bulkStatus.completed} explanations\n${bulkStatus.failed > 0 ? `✗ Failed: ${bulkStatus.failed}` : ''}`);
+      }
+    } catch (e) {
+      console.error('Failed to poll bulk status:', e);
+    }
+  }
+
   async function generateAllExplanations() {
     try {
-      // Get words without explanations
-      const { words: wordsWithout } = await getWordsWithoutExplanations();
+      // Check if already running first
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        alert(`Generation already in progress!\n\nMode: Generate Missing Only\nCurrent: ${status.current}/${status.total}\nCompleted: ${status.completed}\nFailed: ${status.failed}\n\nPlease wait for it to finish.`);
 
-      if (wordsWithout.length === 0) {
+        // Make sure we're polling
+        if (!statusPollInterval) {
+          generatingBulk = true;
+          statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+        }
+        return;
+      }
+
+      if (!confirm(`Generate AI explanations for words that don't have them yet?\n\nThis will ONLY process words without explanations.\nThis will run in the background and may take several minutes.`)) {
+        return;
+      }
+
+      const result = await startBulkGeneration();
+
+      if (result.count === 0) {
         alert('All words already have explanations!');
         return;
       }
 
-      if (!confirm(`Generate AI explanations for ${wordsWithout.length} words? This may take several minutes and requires LM Studio to be running.`)) {
+      generatingBulk = true;
+      currentGenerationMode = 'missing';  // Track which mode we're in
+
+      // Start polling for status updates every second
+      statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+
+      alert(`Started generating explanations for ${result.count} words WITHOUT existing explanations.\n\nYou can continue using the app while this runs in the background.`);
+    } catch (e) {
+      console.error('Failed to start bulk generation:', e);
+      alert('Failed to start bulk generation. Make sure the AI provider is configured and the backend server is active.');
+    }
+  }
+
+  async function regenerateAllExplanations() {
+    try {
+      // Check if already running first
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        alert(`Generation already in progress!\n\nMode: Regenerate ALL Words\nCurrent: ${status.current}/${status.total}\nCompleted: ${status.completed}\nFailed: ${status.failed}\n\nPlease wait for it to finish before starting a new one.`);
+
+        // Make sure we're polling
+        if (!statusPollInterval) {
+          generatingBulk = true;
+          statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+        }
         return;
       }
 
+      if (!confirm(`⚠️ REGENERATE ALL ${$vocabularyTotal} WORDS?\n\nThis will OVERWRITE all existing explanations including the ${$vocabularyTotal - ($vocabularyTotal - 2020)} you already have!\n\nOnly use this if you want to start completely fresh.\n\nAre you sure?`)) {
+        return;
+      }
+
+      const response = await fetch('http://localhost:8000/api/vocabulary/regenerate-all-explanations', {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start regeneration');
+      }
+
+      const result = await response.json();
+
       generatingBulk = true;
-      bulkProgress = { current: 0, total: wordsWithout.length };
+      currentGenerationMode = 'all';  // Track which mode we're in
 
-      let successCount = 0;
-      let failCount = 0;
+      // Start polling for status updates every second
+      statusPollInterval = window.setInterval(pollBulkStatus, 1000);
 
-      // Generate explanations one by one
-      for (let i = 0; i < wordsWithout.length; i++) {
-        const word = wordsWithout[i];
-        try {
-          const result = await generateSingleExplanation(word);
-          if (result.success) {
-            successCount++;
-          } else {
-            failCount++;
-            console.error(`Failed to generate for ${word}:`, result.error);
-          }
-        } catch (e) {
-          failCount++;
-          console.error(`Error generating for ${word}:`, e);
-        }
-        bulkProgress.current = i + 1;
-      }
-
-      // Reload vocabulary to show updated explanations
-      await loadVocabulary(false);
-      // If a word is selected, reload it
-      if ($selectedWord) {
-        await selectWord($selectedWord);
-      }
-
-      alert(`✓ Generated ${successCount} explanations\n${failCount > 0 ? `✗ Failed: ${failCount}` : ''}`);
+      alert(`Started REGENERATING ALL ${result.count} words (including existing ones).\n\nThis will take a very long time. You can continue using the app.`);
     } catch (e) {
-      console.error('Failed to generate explanations:', e);
-      alert('Failed to generate explanations. Make sure LM Studio is running.');
-    } finally {
-      generatingBulk = false;
-      bulkProgress = { current: 0, total: 0 };
+      console.error('Failed to start regeneration:', e);
+      alert('Failed to start regeneration. Make sure the AI provider is configured and the backend server is active.');
     }
   }
 
@@ -163,7 +220,28 @@
     ? $vocabulary.filter(w => w.word.includes(searchQuery.toLowerCase()))
     : $vocabulary;
 
-  onMount(() => loadVocabulary(false));
+  onMount(async () => {
+    await loadVocabulary(false);
+
+    // Check if bulk generation is already running
+    try {
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        generatingBulk = true;
+        bulkStatus = status;
+        statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+      }
+    } catch (e) {
+      console.error('Failed to check bulk generation status:', e);
+    }
+  });
+
+  onDestroy(() => {
+    if (statusPollInterval) {
+      clearInterval(statusPollInterval);
+    }
+  });
+
   $: $vocabularyFilter, currentSort, loadVocabulary(false);
 </script>
 
@@ -242,19 +320,36 @@
         >Known</button>
       </div>
 
-      <!-- Generate All Explanations Button -->
-      <button
-        class="w-full px-3 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
-        on:click={generateAllExplanations}
-        disabled={generatingBulk}
-      >
-        {#if generatingBulk}
-          <span class="animate-spin">⏳</span>
-          Generating AI Explanations...
-        {:else}
-          🤖 Generate All AI Explanations
-        {/if}
-      </button>
+      <!-- Generate Explanations Buttons -->
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          title="Generate explanations only for words that don't have them yet. Safe to use - won't touch existing explanations."
+          class="px-3 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          on:click={generateAllExplanations}
+          disabled={generatingBulk}
+        >
+          {#if generatingBulk && currentGenerationMode === 'missing'}
+            <span class="animate-spin">⏳</span>
+            Generating...
+          {:else}
+            🤖 Missing Only
+          {/if}
+        </button>
+
+        <button
+          title="⚠️ WARNING: Regenerate ALL words including ones that already have explanations. This will overwrite everything!"
+          class="px-3 py-2 bg-orange-600 hover:bg-orange-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2"
+          on:click={regenerateAllExplanations}
+          disabled={generatingBulk}
+        >
+          {#if generatingBulk && currentGenerationMode === 'all'}
+            <span class="animate-spin">⏳</span>
+            Regenerating...
+          {:else}
+            ⚠️ Regen ALL
+          {/if}
+        </button>
+      </div>
 
       <!-- Reshuffle button (only in shuffle mode with random sort) -->
       {#if viewMode === 'shuffle' && shuffleSort === 'random'}
@@ -474,26 +569,41 @@
 </div>
 
 <!-- Progress Modal -->
-{#if generatingBulk && bulkProgress.total > 0}
+{#if generatingBulk && bulkStatus.total > 0}
   <div class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
     <div class="bg-slate-800 rounded-xl p-8 max-w-md w-full mx-4 border border-slate-700">
-      <h3 class="text-xl font-bold text-white mb-4">Generating AI Explanations</h3>
+      <h3 class="text-xl font-bold text-white mb-2">Generating AI Explanations</h3>
+
+      {#if currentGenerationMode === 'missing'}
+        <p class="text-sm text-green-400 mb-4">📝 Mode: Generate Missing Only ({bulkStatus.total} words)</p>
+      {:else if currentGenerationMode === 'all'}
+        <p class="text-sm text-orange-400 mb-4">⚠️ Mode: Regenerating ALL Words ({bulkStatus.total} words)</p>
+      {:else}
+        <p class="text-sm text-slate-400 mb-4">Processing {bulkStatus.total} words</p>
+      {/if}
 
       <div class="mb-4">
         <div class="flex justify-between text-sm text-slate-400 mb-2">
           <span>Progress</span>
-          <span>{bulkProgress.current} / {bulkProgress.total}</span>
+          <span>{bulkStatus.current} / {bulkStatus.total}</span>
         </div>
         <div class="h-3 bg-slate-700 rounded-full overflow-hidden">
           <div
             class="h-full bg-purple-600 transition-all duration-300"
-            style="width: {(bulkProgress.current / bulkProgress.total) * 100}%"
+            style="width: {bulkStatus.total > 0 ? (bulkStatus.current / bulkStatus.total) * 100 : 0}%"
           ></div>
         </div>
       </div>
 
+      <div class="space-y-2 mb-4">
+        <div class="flex justify-between text-xs text-slate-500">
+          <span>Completed: {bulkStatus.completed}</span>
+          <span>Failed: {bulkStatus.failed}</span>
+        </div>
+      </div>
+
       <p class="text-slate-400 text-sm text-center">
-        This may take several minutes. Please wait...
+        Running in background. You can continue using the app.
       </p>
     </div>
   </div>

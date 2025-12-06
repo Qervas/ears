@@ -40,9 +40,19 @@ class Database:
                 first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'learning',
-                explanation TEXT
+                explanation TEXT,
+                explanation_json TEXT
             )
         """)
+
+        # Migration: Add explanation_json column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE vocabulary ADD COLUMN explanation_json TEXT")
+            conn.commit()
+            print("✓ Added explanation_json column to vocabulary table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
 
         # Word contexts table
         cursor.execute("""
@@ -88,7 +98,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
-            query = "SELECT id, word, frequency, status, first_seen, last_seen FROM vocabulary"
+            query = "SELECT id, word, frequency, status, first_seen, last_seen, explanation_json FROM vocabulary"
             params = []
 
             if status:

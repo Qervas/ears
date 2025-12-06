@@ -7,6 +7,7 @@
     { id: 'learn', label: 'Learn', icon: '🎯' },
     { id: 'chat', label: 'AI Tutor', icon: '💬' },
     { id: 'recordings', label: 'Recordings', icon: '🎙️' },
+    { id: 'settings', label: 'Settings', icon: '⚙️' },
   ] as const;
 </script>
 

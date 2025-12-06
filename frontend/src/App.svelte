@@ -7,6 +7,7 @@
   import Learn from './components/Learn.svelte';
   import Chat from './components/Chat.svelte';
   import Recordings from './components/Recordings.svelte';
+  import Settings from './components/Settings.svelte';
   import Sidebar from './components/Sidebar.svelte';
 
   onMount(async () => {
@@ -33,6 +34,8 @@
       <Chat />
     {:else if $currentView === 'recordings'}
       <Recordings />
+    {:else if $currentView === 'settings'}
+      <Settings />
     {/if}
   </main>
 </div>

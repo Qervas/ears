@@ -166,6 +166,24 @@ export async function generateSingleExplanation(word: string): Promise<{ success
   });
 }
 
+export interface BulkGenerationStatus {
+  running: boolean;
+  current: number;
+  total: number;
+  completed: number;
+  failed: number;
+}
+
+export async function startBulkGeneration(): Promise<{ message: string; count: number }> {
+  return request('/vocabulary/generate-all-explanations', {
+    method: 'POST',
+  });
+}
+
+export async function getBulkGenerationStatus(): Promise<BulkGenerationStatus> {
+  return request('/vocabulary/bulk-generation-status');
+}
+
 export interface ChatResponse {
   response: string;
 }
