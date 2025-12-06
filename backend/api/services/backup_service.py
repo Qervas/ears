@@ -78,3 +78,17 @@ class BackupService:
         if backup_path.exists():
             return backup_path
         return None
+
+    @staticmethod
+    def delete_backup(filename: str) -> bool:
+        """Delete a specific backup file."""
+        backup_path = BackupService.get_backup_path(filename)
+        if backup_path and backup_path.exists():
+            try:
+                backup_path.unlink()
+                print(f"✓ Deleted backup: {filename}")
+                return True
+            except Exception as e:
+                print(f"✗ Failed to delete backup: {e}")
+                return False
+        return False

@@ -190,7 +190,7 @@ export interface ChatResponse {
 }
 
 export async function chat(message: string, context = ''): Promise<ChatResponse> {
-  return request('/chat', {
+  return request('/learn/chat', {
     method: 'POST',
     body: JSON.stringify({ message, context }),
   });
@@ -304,6 +304,12 @@ export async function startRecording(device_id: number): Promise<{ status: strin
 
 export async function stopRecording(): Promise<{ status: string; filepath: string }> {
   return request('/recording/stop', {
+    method: 'POST',
+  });
+}
+
+export async function openRecordingsFolder(): Promise<{ status: string; path: string }> {
+  return request('/recordings/open-folder', {
     method: 'POST',
   });
 }

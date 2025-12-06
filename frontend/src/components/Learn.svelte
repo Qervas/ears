@@ -181,21 +181,27 @@
       return;
     }
 
-    // If audio exists but is paused, resume it
+    // If audio exists but is paused, replay from segment start
     if (listeningAudio && !isPlaying) {
-      console.log('🎵 Resuming audio');
+      console.log('🎵 Replaying segment from start');
       try {
+        // Always reset to segment start for replay
+        listeningAudio.currentTime = segment.start;
         await listeningAudio.play();
         isPlaying = true;
-      } catch (e) {
-        console.error('🎵 Failed to resume:', e);
+      } catch (e: any) {
+        // Ignore AbortError - happens when audio is interrupted (normal behavior)
+        if (e.name !== 'AbortError') {
+          console.error('🎵 Failed to replay:', e);
+        }
       }
       return;
     }
 
     // Create new audio element (only if none exists)
-    listeningAudio = new Audio(segment.audio_url);
-    console.log('🎵 Audio URL:', segment.audio_url);
+    const fullAudioUrl = `http://localhost:8000${segment.audio_url}`;
+    listeningAudio = new Audio(fullAudioUrl);
+    console.log('🎵 Audio URL:', fullAudioUrl);
 
     // Event handlers
     function handleTimeUpdate() {
@@ -257,8 +263,11 @@
       console.log('🎵 Starting playback...');
       await listeningAudio.play();
       console.log('🎵 Playback started successfully');
-    } catch (e) {
-      console.error('🎵 Failed to play audio:', e);
+    } catch (e: any) {
+      // Ignore AbortError - happens when audio is interrupted (normal behavior)
+      if (e.name !== 'AbortError') {
+        console.error('🎵 Failed to play audio:', e);
+      }
       isPlaying = false;
     }
   }

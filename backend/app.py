@@ -18,6 +18,9 @@ from fastapi.middleware.cors import CORSMiddleware
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     warnings.filterwarnings('ignore', category=RuntimeWarning, module='asyncio')
+    # Suppress ConnectionResetError from proactor event loop
+    import logging
+    logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 
 # Import routers
 from api.routers import (
@@ -65,8 +68,6 @@ app.include_router(backups.router, prefix="/api")
 async def startup_event():
     """Run on application startup."""
     print("\n🚀 Starting Ears backend...")
-    print("📦 Creating startup database backup...")
-    BackupService.create_backup()
     print("✓ Ready!\n")
 
 

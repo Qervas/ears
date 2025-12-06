@@ -44,24 +44,34 @@ async def get_learning_progress():
 @router.get("/listening-quiz")
 async def get_listening_quiz(count: int = 10):
     """Get random Swedish audio segments for listening practice."""
+    import json
     from ..dependencies import RECORDINGS_DIR
 
-    segments = []
-    transcripts = await db.get_transcripts(limit=100)
+    all_segments = []
 
-    if transcripts:
-        # Filter to Swedish segments and sample randomly
-        swedish_segments = [t for t in transcripts if t.get("cleaned_text")]
-        sample_size = min(count, len(swedish_segments))
+    # Read from JSON transcript files in recordings folder
+    if RECORDINGS_DIR.exists():
+        for json_file in RECORDINGS_DIR.glob("*.json"):
+            try:
+                data = json.loads(json_file.read_text(encoding='utf-8'))
+                recording_name = json_file.stem + ".wav"
 
-        for t in random.sample(swedish_segments, sample_size):
-            segments.append({
-                "text": t["cleaned_text"] or t["raw_text"],
-                "start": 0,  # Would need segment timing data
-                "end": t.get("duration_seconds", 0),
-                "recording": t.get("recording_file", ""),
-                "audio_url": f"/api/recordings/{t.get('recording_file', '')}/audio"
-            })
+                # Get Swedish segments with timestamps
+                for seg in data.get("segments", []):
+                    if seg.get("language") == "sv" and seg.get("start") is not None:
+                        all_segments.append({
+                            "text": seg["text"],
+                            "start": seg["start"],
+                            "end": seg["end"],
+                            "recording": recording_name,
+                            "audio_url": f"/api/recordings/{recording_name}/audio"
+                        })
+            except Exception:
+                continue
+
+    # Sample random segments
+    sample_size = min(count, len(all_segments))
+    segments = random.sample(all_segments, sample_size) if all_segments else []
 
     return {"segments": segments}
 

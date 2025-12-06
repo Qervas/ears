@@ -44,8 +44,8 @@ class RecordingService:
             return {"error": "Already recording"}
 
         try:
-            cls._instance = Recorder(device_id=device_id)
-            cls._instance.start()
+            cls._instance = Recorder()
+            cls._instance.start(device_id)
 
             cls._status["recording"] = True
             cls._status["device_id"] = device_id

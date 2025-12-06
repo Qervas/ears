@@ -123,6 +123,27 @@
   function downloadBackup(filename: string) {
     window.open(`http://localhost:8000/api/database/download-backup/${filename}`, '_blank');
   }
+
+  async function deleteBackup(filename: string) {
+    if (!confirm(`Are you sure you want to delete backup "${filename}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/database/backup/${filename}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        await loadBackups();
+      } else {
+        alert('Failed to delete backup');
+      }
+    } catch (e) {
+      console.error('Delete backup error:', e);
+      alert(`Failed to delete backup: ${e}`);
+    }
+  }
 </script>
 
 <div class="h-full overflow-auto p-8 bg-slate-900">
@@ -298,12 +319,20 @@
                     {backup.created} • {backup.size_mb} MB
                   </div>
                 </div>
-                <button
-                  on:click={() => downloadBackup(backup.filename)}
-                  class="ml-4 px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded transition-colors"
-                >
-                  ⬇ Download
-                </button>
+                <div class="flex gap-2 ml-4">
+                  <button
+                    on:click={() => downloadBackup(backup.filename)}
+                    class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded transition-colors"
+                  >
+                    ⬇ Download
+                  </button>
+                  <button
+                    on:click={() => deleteBackup(backup.filename)}
+                    class="px-3 py-1 bg-red-900/50 hover:bg-red-800 text-red-300 text-sm rounded transition-colors"
+                  >
+                    🗑 Delete
+                  </button>
+                </div>
               </div>
             {/each}
           </div>

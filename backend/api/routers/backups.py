@@ -49,3 +49,12 @@ async def download_backup(filename: str):
         filename=filename,
         media_type="application/octet-stream"
     )
+
+
+@router.delete("/backup/{filename}")
+async def delete_backup(filename: str):
+    """Delete a specific backup file."""
+    if BackupService.delete_backup(filename):
+        return {"success": True, "message": f"Backup {filename} deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Backup not found or could not be deleted")
