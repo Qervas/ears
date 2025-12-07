@@ -3,8 +3,9 @@
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
+    { id: 'study', label: 'Study', icon: '📖' },
     { id: 'vocabulary', label: 'Vocabulary', icon: '📚' },
-    { id: 'learn', label: 'Learn', icon: '🎯' },
+    { id: 'learn', label: 'Practice', icon: '🎯' },
     { id: 'chat', label: 'AI Tutor', icon: '💬' },
     { id: 'recordings', label: 'Recordings', icon: '🎙️' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },

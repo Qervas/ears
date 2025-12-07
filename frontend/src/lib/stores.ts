@@ -27,7 +27,10 @@ function persistentWritable<T>(key: string, initialValue: T) {
 }
 
 // Current view/page (persisted across refreshes)
-export const currentView = persistentWritable<'dashboard' | 'vocabulary' | 'learn' | 'chat' | 'recordings'>('currentView', 'dashboard');
+export const currentView = persistentWritable<'dashboard' | 'vocabulary' | 'study' | 'learn' | 'chat' | 'recordings' | 'settings'>('currentView', 'dashboard');
+
+// Word to open in Study page (for navigation from search)
+export const selectedStudyWord = writable<Word | null>(null);
 
 // Vocabulary state
 export const vocabulary = writable<Word[]>([]);

@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { learningWords, currentLearningIndex, currentLearningWord, learningProgress, stats } from '../lib/stores';
-  import { getLearningSession, updateWordStatus, playTTS, explainWord, getStats, getListeningQuiz, getGrammarQuiz, type ListeningSegment, type GrammarQuestion } from '../lib/api';
+  import { getLearningSession, updateWordStatus, playTTS, explainWord, getStats, getListeningQuiz, getGrammarQuiz, type ListeningSegment, type GrammarQuestion, type Word } from '../lib/api';
 
   // Learning mode selection
   type LearningMode = 'select' | 'vocabulary' | 'listening' | 'speaking' | 'grammar';
@@ -9,7 +9,7 @@
 
   // Vocabulary mode state
   let showAnswer = false;
-  let explanation = '';
+  let explanation: any = null;
   let loading = true;
   let sessionComplete = false;
 
@@ -42,7 +42,7 @@
       loading = true;
       sessionComplete = false;
       showAnswer = false;
-      explanation = '';
+      explanation = null;
       currentLearningIndex.set(0);
 
       try {
@@ -99,34 +99,45 @@
     sessionComplete = false;
   }
 
+  // Parse explanation JSON with new format
+  interface UsagePattern {
+    pattern: string;
+    meaning: string;
+    category?: string;
+  }
+
+  interface RelatedWord {
+    word: string;
+    relation: string;
+    translation: string;
+  }
+
+  interface ExplanationData {
+    translation?: string;
+    type?: string;
+    usagePatterns?: UsagePattern[];
+    relatedWords?: RelatedWord[];
+    tip?: string;
+    note?: string;
+  }
+
+  function parseExplanation(word: Word): ExplanationData | null {
+    if (!word.explanation_json) return null;
+    try {
+      return JSON.parse(word.explanation_json);
+    } catch {
+      return null;
+    }
+  }
+
   function reveal() {
     showAnswer = true;
     if ($currentLearningWord) {
       playTTS($currentLearningWord.word).catch(console.error);
 
-      // Parse and display existing explanation_json if available
+      // Parse explanation_json with new format
       if ($currentLearningWord.explanation_json) {
-        try {
-          const parsed = JSON.parse($currentLearningWord.explanation_json);
-          // Format the structured explanation
-          let formatted = '';
-          if (parsed.definition) {
-            formatted += `📖 ${parsed.definition}\n\n`;
-          }
-          if (parsed.usage && Array.isArray(parsed.usage) && parsed.usage.length > 0) {
-            formatted += `💡 Usage:\n${parsed.usage.map((u: string) => `  • ${u}`).join('\n')}\n\n`;
-          }
-          if (parsed.related && Array.isArray(parsed.related) && parsed.related.length > 0) {
-            formatted += `🔗 Related: ${parsed.related.join(', ')}\n\n`;
-          }
-          if (parsed.tip) {
-            formatted += `💭 Tip: ${parsed.tip}`;
-          }
-          explanation = formatted || 'No explanation available';
-        } catch (e) {
-          console.error('Failed to parse explanation_json:', e);
-          explanation = '';
-        }
+        explanation = parseExplanation($currentLearningWord);
       }
     }
   }
@@ -140,7 +151,7 @@
 
     // Move to next word
     showAnswer = false;
-    explanation = '';
+    explanation = null;
 
     if ($currentLearningIndex >= $learningWords.length - 1) {
       sessionComplete = true;
@@ -156,9 +167,10 @@
         $currentLearningWord.word,
         $currentLearningWord.example || ''
       );
-      explanation = result.explanation;
+      // Store raw text if AI generates new explanation
+      explanation = { raw: result.explanation };
     } catch (e) {
-      explanation = 'Failed to get hint. Is LM Studio running?';
+      explanation = { raw: 'Failed to get hint. Is LM Studio running?' };
     }
   }
 
@@ -171,11 +183,10 @@
     const segment = listeningSegments[currentListeningIndex];
     if (!segment) return;
 
-    console.log('🎵 Playing segment:', segment);
+    console.log('Playing segment:', segment);
 
     // If audio exists and is playing, just pause it
     if (listeningAudio && isPlaying) {
-      console.log('🎵 Pausing audio');
       listeningAudio.pause();
       isPlaying = false;
       return;
@@ -183,90 +194,58 @@
 
     // If audio exists but is paused, replay from segment start
     if (listeningAudio && !isPlaying) {
-      console.log('🎵 Replaying segment from start');
       try {
-        // Always reset to segment start for replay
         listeningAudio.currentTime = segment.start;
         await listeningAudio.play();
         isPlaying = true;
       } catch (e: any) {
-        // Ignore AbortError - happens when audio is interrupted (normal behavior)
         if (e.name !== 'AbortError') {
-          console.error('🎵 Failed to replay:', e);
+          console.error('Failed to replay:', e);
         }
       }
       return;
     }
 
-    // Create new audio element (only if none exists)
+    // Create new audio element
     const fullAudioUrl = `http://localhost:8000${segment.audio_url}`;
     listeningAudio = new Audio(fullAudioUrl);
-    console.log('🎵 Audio URL:', fullAudioUrl);
 
-    // Event handlers
     function handleTimeUpdate() {
       if (listeningAudio && listeningAudio.currentTime >= segment.end) {
-        console.log('🎵 Reached end of segment');
         listeningAudio.pause();
         isPlaying = false;
       }
     }
 
-    function handlePlay() {
-      console.log('🎵 Audio playing');
-      isPlaying = true;
-    }
-
-    function handlePause() {
-      console.log('🎵 Audio paused');
-      isPlaying = false;
-    }
-
-    function handleEnded() {
-      console.log('🎵 Audio ended');
-      isPlaying = false;
-    }
-
+    function handlePlay() { isPlaying = true; }
+    function handlePause() { isPlaying = false; }
+    function handleEnded() { isPlaying = false; }
     function handleError(e: Event) {
-      console.error('🎵 Audio error:', e);
+      console.error('Audio error:', e);
       isPlaying = false;
     }
 
-    // Attach event listeners
     listeningAudio.addEventListener('timeupdate', handleTimeUpdate);
     listeningAudio.addEventListener('play', handlePlay);
     listeningAudio.addEventListener('pause', handlePause);
     listeningAudio.addEventListener('ended', handleEnded);
     listeningAudio.addEventListener('error', handleError);
 
-    // Wait for canplay event before seeking
     try {
       await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          console.error('🎵 Timeout waiting for canplay');
-          reject(new Error('Audio load timeout'));
-        }, 5000);
-
+        const timeout = setTimeout(() => reject(new Error('Audio load timeout')), 5000);
         listeningAudio!.addEventListener('canplay', () => {
-          console.log('🎵 Audio can play');
           clearTimeout(timeout);
           resolve(true);
         }, { once: true });
-
         listeningAudio!.load();
       });
 
-      // Set start time and play
-      console.log('🎵 Setting start time to:', segment.start);
       listeningAudio.currentTime = segment.start;
-
-      console.log('🎵 Starting playback...');
       await listeningAudio.play();
-      console.log('🎵 Playback started successfully');
     } catch (e: any) {
-      // Ignore AbortError - happens when audio is interrupted (normal behavior)
       if (e.name !== 'AbortError') {
-        console.error('🎵 Failed to play audio:', e);
+        console.error('Failed to play audio:', e);
       }
       isPlaying = false;
     }
@@ -295,7 +274,7 @@
 
   // Grammar practice functions
   function selectGrammarAnswer(index: number) {
-    if (grammarShowAnswer) return; // Already answered
+    if (grammarShowAnswer) return;
     selectedAnswer = index;
   }
 
@@ -313,23 +292,27 @@
     }
   }
 
-  onMount(loadStats);
+  onMount(() => {
+    loadStats();
+  });
 </script>
 
 <div class="p-8">
   <div class="flex items-center justify-between mb-8">
     <div>
-      <h2 class="text-3xl font-bold text-white">Learn Swedish</h2>
-      <p class="text-slate-400 mt-1">Choose your learning path</p>
+      <h2 class="text-3xl font-bold text-white">Practice</h2>
+      <p class="text-slate-400 mt-1">Train your Swedish skills</p>
     </div>
-    {#if mode !== 'select'}
-      <button
-        class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg"
-        on:click={backToModeSelect}
-      >
-        ← Back to Modes
-      </button>
-    {/if}
+    <div class="flex items-center gap-3">
+      {#if mode !== 'select'}
+        <button
+          class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg"
+          on:click={backToModeSelect}
+        >
+          ← Back to Modes
+        </button>
+      {/if}
+    </div>
   </div>
 
   {#if mode === 'select'}
@@ -373,7 +356,7 @@
             Review Swedish words with flashcards. See the word, think about the meaning, then reveal the answer.
           </p>
           <div class="flex items-center gap-2 text-slate-500 text-xs">
-            <span>⏱️ ~15 min</span>
+            <span>~15 min</span>
             <span>•</span>
             <span>10 words per session</span>
           </div>
@@ -397,7 +380,7 @@
             Listen to sentences from your recordings. Test your comprehension and learn in context.
           </p>
           <div class="flex items-center gap-2 text-slate-500 text-xs">
-            <span>⏱️ ~10 min</span>
+            <span>~10 min</span>
             <span>•</span>
             <span>Real Swedish audio</span>
           </div>
@@ -421,7 +404,7 @@
             Practice pronunciation and speaking. Listen, repeat, and build confidence in speaking Swedish.
           </p>
           <div class="flex items-center gap-2 text-slate-500 text-xs">
-            <span>⏱️ ~10 min</span>
+            <span>~10 min</span>
             <span>•</span>
             <span>TTS pronunciation guide</span>
           </div>
@@ -445,7 +428,7 @@
             Learn Swedish grammar through patterns. Fill in blanks, practice word order, and master prepositions.
           </p>
           <div class="flex items-center gap-2 text-slate-500 text-xs">
-            <span>⏱️ ~10 min</span>
+            <span>~10 min</span>
             <span>•</span>
             <span>Contextual learning</span>
           </div>
@@ -454,7 +437,7 @@
 
       <!-- Quick Tips -->
       <div class="mt-8 p-4 bg-slate-800/50 rounded-lg border border-slate-700 text-sm text-slate-400">
-        <strong class="text-white">💡 Tip:</strong> Mix different modes for balanced learning. Vocabulary builds your foundation, while Listening and Speaking help you use it naturally!
+        <strong class="text-white">Tip:</strong> Mix different modes for balanced learning. Vocabulary builds your foundation, while Listening and Speaking help you use it naturally!
       </div>
     </div>
 
@@ -539,9 +522,50 @@
           {/if}
 
           {#if explanation}
-            <div class="p-4 bg-slate-700 rounded-lg text-slate-300 whitespace-pre-wrap text-sm">
-              {explanation}
-            </div>
+            {#if explanation.raw}
+              <!-- Raw text explanation (from AI hint) -->
+              <div class="p-4 bg-slate-700 rounded-lg text-slate-300 whitespace-pre-wrap text-sm">
+                {explanation.raw}
+              </div>
+            {:else}
+              <!-- Structured explanation (new format) -->
+              <div class="space-y-3">
+                {#if explanation.translation}
+                  <div class="p-3 bg-slate-700 rounded-lg">
+                    <span class="text-primary-400 font-bold text-lg">{explanation.translation}</span>
+                    {#if explanation.type}
+                      <span class="text-slate-500 text-sm ml-2">({explanation.type})</span>
+                    {/if}
+                  </div>
+                {/if}
+
+                {#if explanation.usagePatterns?.length}
+                  <div class="p-3 bg-slate-700 rounded-lg">
+                    <div class="text-slate-400 text-xs mb-2">Usage:</div>
+                    {#each explanation.usagePatterns.slice(0, 2) as pattern}
+                      <div class="text-sm text-slate-300">
+                        • <span class="text-white">{pattern.pattern}</span> → {pattern.meaning}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+
+                {#if explanation.relatedWords?.length}
+                  <div class="p-3 bg-slate-700 rounded-lg">
+                    <div class="text-slate-400 text-xs mb-1">Related:</div>
+                    <div class="text-sm text-slate-300">
+                      {explanation.relatedWords.map((r: RelatedWord) => `${r.word} (${r.translation})`).join(', ')}
+                    </div>
+                  </div>
+                {/if}
+
+                {#if explanation.tip}
+                  <div class="p-3 bg-yellow-900/30 rounded-lg text-sm text-yellow-200">
+                    💡 {explanation.tip}
+                  </div>
+                {/if}
+              </div>
+            {/if}
           {:else}
             <button
               class="text-primary-400 hover:text-primary-300 text-sm"
@@ -854,7 +878,7 @@
 
               <!-- Real Examples from Recordings -->
               <div class="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
-                <h4 class="text-blue-300 font-semibold text-sm mb-2">📝 From your recordings:</h4>
+                <h4 class="text-blue-300 font-semibold text-sm mb-2">From your recordings:</h4>
                 <div class="space-y-1">
                   {#each question.real_examples.slice(0, 3) as example}
                     <p class="text-blue-200 text-sm">• "{example}"</p>

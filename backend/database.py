@@ -92,18 +92,27 @@ class Database:
         limit: int = 100,
         offset: int = 0,
         status: str = None,
-        sort: str = "frequency"
+        sort: str = "frequency",
+        search: str = None
     ) -> list:
-        """Get vocabulary with optional filtering."""
+        """Get vocabulary with optional filtering and search."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             query = "SELECT id, word, frequency, status, first_seen, last_seen, explanation_json FROM vocabulary"
             params = []
+            conditions = []
 
             if status:
-                query += " WHERE status = ?"
+                conditions.append("status = ?")
                 params.append(status)
+
+            if search:
+                conditions.append("word LIKE ?")
+                params.append(f"%{search}%")
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
 
             if sort == "frequency":
                 query += " ORDER BY frequency DESC"

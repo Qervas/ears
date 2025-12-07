@@ -44,11 +44,17 @@ export async function getVocabulary(
   limit = 100,
   offset = 0,
   status?: string,
-  sort = 'frequency'
+  sort = 'frequency',
+  search?: string
 ): Promise<VocabularyResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort });
   if (status) params.set('status', status);
+  if (search) params.set('search', search);
   return request(`/vocabulary?${params}`);
+}
+
+export async function searchVocabulary(query: string, limit = 20): Promise<VocabularyResponse> {
+  return getVocabulary(limit, 0, undefined, 'frequency', query);
 }
 
 export async function getWord(word: string): Promise<Word> {

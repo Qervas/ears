@@ -4,6 +4,7 @@
   import { getStats } from './lib/api';
   import Dashboard from './components/Dashboard.svelte';
   import Vocabulary from './components/Vocabulary.svelte';
+  import Study from './components/Study.svelte';
   import Learn from './components/Learn.svelte';
   import Chat from './components/Chat.svelte';
   import Recordings from './components/Recordings.svelte';
@@ -28,6 +29,8 @@
       <Dashboard />
     {:else if $currentView === 'vocabulary'}
       <Vocabulary />
+    {:else if $currentView === 'study'}
+      <Study />
     {:else if $currentView === 'learn'}
       <Learn />
     {:else if $currentView === 'chat'}

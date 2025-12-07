@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { vocabulary, vocabularyTotal, vocabularyLoading, vocabularyFilter, selectedWord } from '../lib/stores';
+  import { vocabulary, vocabularyTotal, vocabularyLoading, vocabularyFilter, selectedWord, selectedStudyWord, currentView } from '../lib/stores';
   import { getVocabulary, getWord, updateWordStatus, playTTS, explainWord, startBulkGeneration, getBulkGenerationStatus } from '../lib/api';
   import type { Word, BulkGenerationStatus } from '../lib/api';
 
@@ -456,8 +456,14 @@
           <span class="text-slate-400">First seen: {new Date($selectedWord.first_seen).toLocaleDateString()}</span>
         </div>
 
-        <!-- Status Buttons -->
+        <!-- Actions -->
         <div class="flex gap-2">
+          <button
+            class="px-4 py-2 rounded-lg bg-primary-600 hover:bg-primary-500 text-white"
+            on:click={() => { selectedStudyWord.set($selectedWord); currentView.set('study'); }}
+          >
+            Study
+          </button>
           <button
             class="px-4 py-2 rounded-lg {$selectedWord.status === 'learning' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300'}"
             on:click={() => setStatus($selectedWord.word, 'learning')}

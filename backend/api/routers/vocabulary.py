@@ -14,10 +14,11 @@ async def get_vocabulary(
     limit: int = 100,
     offset: int = 0,
     status: str = None,
-    sort: str = "frequency"
+    sort: str = "frequency",
+    search: str = None
 ):
-    """Get vocabulary list with optional filtering."""
-    words = await db.get_vocabulary(limit=limit, offset=offset, status=status, sort=sort)
+    """Get vocabulary list with optional filtering and search."""
+    words = await db.get_vocabulary(limit=limit, offset=offset, status=status, sort=sort, search=search)
     total = await db.get_vocabulary_count(status=status)
     return {"words": words, "total": total}
 
@@ -121,6 +122,12 @@ async def get_word(word: str):
     word_data = await db.get_word(word)
     if not word_data:
         raise HTTPException(status_code=404, detail="Word not found")
+
+    # Add contexts and example
+    contexts = await db.get_word_contexts(word, limit=10)
+    word_data["contexts"] = contexts
+    word_data["example"] = contexts[0] if contexts else None
+
     return word_data
 
 
