@@ -39,7 +39,7 @@ class Database:
                 frequency INTEGER DEFAULT 1,
                 first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'learning',
+                status TEXT DEFAULT 'undiscovered',
                 explanation TEXT,
                 explanation_json TEXT
             )
@@ -252,6 +252,11 @@ class Database:
             total = (await cursor.fetchone())[0]
 
             cursor = await db.execute(
+                "SELECT COUNT(*) FROM vocabulary WHERE status = 'undiscovered'"
+            )
+            undiscovered = (await cursor.fetchone())[0]
+
+            cursor = await db.execute(
                 "SELECT COUNT(*) FROM vocabulary WHERE status = 'learning'"
             )
             learning = (await cursor.fetchone())[0]
@@ -266,6 +271,7 @@ class Database:
 
             return {
                 "total_words": total,
+                "undiscovered": undiscovered,
                 "learning": learning,
                 "known": known,
                 "total_occurrences": total_occurrences

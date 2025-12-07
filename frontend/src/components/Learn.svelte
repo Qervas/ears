@@ -320,14 +320,18 @@
     <div class="max-w-4xl mx-auto">
       <!-- Stats Overview -->
       {#if $stats}
-        <div class="grid grid-cols-3 gap-4 mb-8">
+        <div class="grid grid-cols-4 gap-4 mb-8">
           <div class="bg-slate-800 rounded-lg p-4 border border-slate-700">
-            <div class="text-slate-400 text-sm">Total Words</div>
-            <div class="text-2xl font-bold text-white">{$stats.total_words}</div>
+            <div class="text-slate-400 text-sm">Total</div>
+            <div class="text-2xl font-bold text-white">{$stats.total}</div>
           </div>
-          <div class="bg-slate-800 rounded-lg p-4 border border-blue-700/50">
-            <div class="text-blue-400 text-sm">Learning</div>
-            <div class="text-2xl font-bold text-blue-300">{$stats.learning}</div>
+          <div class="bg-slate-800 rounded-lg p-4 border border-slate-600">
+            <div class="text-slate-400 text-sm">Undiscovered</div>
+            <div class="text-2xl font-bold text-slate-300">{$stats.undiscovered}</div>
+          </div>
+          <div class="bg-slate-800 rounded-lg p-4 border border-yellow-700/50">
+            <div class="text-yellow-400 text-sm">Learning</div>
+            <div class="text-2xl font-bold text-yellow-300">{$stats.learning}</div>
           </div>
           <div class="bg-slate-800 rounded-lg p-4 border border-green-700/50">
             <div class="text-green-400 text-sm">Known</div>

@@ -26,7 +26,7 @@ export interface Word {
   id: number;
   word: string;
   frequency: number;
-  status: 'learning' | 'known';
+  status: 'undiscovered' | 'learning' | 'known';
   first_seen: string;
   last_seen: string;
   explanation?: string;
@@ -71,10 +71,12 @@ export async function updateWordStatus(word: string, status: string): Promise<vo
 // ============== Stats ==============
 
 export interface Stats {
-  total_words: number;
+  total: number;
+  total_words?: number;  // Legacy alias for total
+  undiscovered: number;
   learning: number;
   known: number;
-  total_occurrences: number;
+  total_occurrences?: number;
 }
 
 export async function getStats(): Promise<Stats> {

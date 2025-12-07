@@ -27,13 +27,14 @@ async def get_vocabulary(
 async def get_vocabulary_stats():
     """Get vocabulary statistics."""
     total = await db.get_vocabulary_count()
+    undiscovered = await db.get_vocabulary_count(status="undiscovered")
     learning = await db.get_vocabulary_count(status="learning")
     known = await db.get_vocabulary_count(status="known")
     return {
         "total": total,
+        "undiscovered": undiscovered,
         "learning": learning,
-        "known": known,
-        "new": total - learning - known
+        "known": known
     }
 
 
@@ -134,7 +135,7 @@ async def get_word(word: str):
 @router.put("/{word}/status")
 async def update_word_status(word: str, status_update: WordStatus):
     """Update the learning status of a word."""
-    await db.update_word_status(word, status_update.status)
+    await db.set_word_status(word, status_update.status)
     return {"status": "updated", "word": word, "new_status": status_update.status}
 
 
