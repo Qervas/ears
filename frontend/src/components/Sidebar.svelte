@@ -3,8 +3,9 @@
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
-    { id: 'vocabulary', label: 'Vocabulary', icon: '📚' },
-    { id: 'learn', label: 'Learn', icon: '🎯' },
+    { id: 'study', label: 'Study', icon: '📖' },
+    { id: 'dictionary', label: 'Dictionary', icon: '📚' },
+    { id: 'practice', label: 'Practice', icon: '🎯' },
     { id: 'chat', label: 'AI Tutor', icon: '💬' },
     { id: 'recordings', label: 'Recordings', icon: '🎙️' },
     { id: 'settings', label: 'Settings', icon: '⚙️' },
@@ -38,7 +39,11 @@
   {#if $stats}
     <div class="p-4 border-t border-slate-700">
       <div class="text-sm text-slate-400 mb-2">Your Progress</div>
-      <div class="grid grid-cols-2 gap-2 text-center">
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div>
+          <div class="text-lg font-bold text-slate-400">{$stats.undiscovered}</div>
+          <div class="text-xs text-slate-500">New</div>
+        </div>
         <div>
           <div class="text-lg font-bold text-yellow-400">{$stats.learning}</div>
           <div class="text-xs text-slate-500">Learning</div>

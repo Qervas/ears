@@ -20,18 +20,18 @@ def init_vocab_db():
             frequency INTEGER DEFAULT 1,
             first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
             last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'learning'  -- learning, known
+            status TEXT DEFAULT 'undiscovered'  -- undiscovered, learning, known
         )
     """)
 
-    # Fix any words with NULL or invalid status - set them to 'learning'
+    # Fix any words with NULL or invalid status - set them to 'undiscovered'
     cursor.execute("""
         UPDATE vocabulary
-        SET status = 'learning'
-        WHERE status IS NULL OR status NOT IN ('learning', 'known')
+        SET status = 'undiscovered'
+        WHERE status IS NULL OR status NOT IN ('undiscovered', 'learning', 'known')
     """)
     if cursor.rowcount > 0:
-        print(f"Fixed {cursor.rowcount} words with invalid status -> 'learning'")
+        print(f"Fixed {cursor.rowcount} words with invalid status -> 'undiscovered'")
 
     # Contexts table - example sentences for each word
     cursor.execute("""
@@ -242,8 +242,8 @@ def get_word_contexts(word: str) -> list:
 
 def set_word_status(word: str, status: str):
     """Set the learning status of a word."""
-    if status not in ('learning', 'known'):
-        print(f"Invalid status: {status}. Use 'learning' or 'known'.")
+    if status not in ('undiscovered', 'learning', 'known'):
+        print(f"Invalid status: {status}. Use 'undiscovered', 'learning', or 'known'.")
         return
 
     conn = sqlite3.connect(DATABASE_PATH)

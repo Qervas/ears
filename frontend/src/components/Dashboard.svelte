@@ -68,7 +68,7 @@
     <div class="grid grid-cols-2 gap-6 mb-8">
       <button
         class="bg-primary-600 hover:bg-primary-500 text-white rounded-xl p-6 text-left transition-colors"
-        on:click={() => currentView.set('learn')}
+        on:click={() => currentView.set('practice')}
       >
         <div class="text-2xl mb-2">🎯</div>
         <div class="text-xl font-semibold">Start Learning</div>
@@ -90,7 +90,7 @@
         <h3 class="text-lg font-semibold text-white">Recent Words</h3>
         <button
           class="text-primary-400 hover:text-primary-300 text-sm"
-          on:click={() => currentView.set('vocabulary')}
+          on:click={() => currentView.set('dictionary')}
         >
           View all →
         </button>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { getRecordings, transcribeFile, getAudioDevices, getRecordingStatus, startRecording, stopRecording, rebuildVocabulary, getRecordingTranscript, getRecordingAudioUrl } from '../lib/api';
+  import { getRecordings, transcribeFile, getAudioDevices, getRecordingStatus, startRecording, stopRecording, rebuildVocabulary, getRecordingTranscript, getRecordingAudioUrl, openRecordingsFolder } from '../lib/api';
   import type { Recording, AudioDevice, RecordingStatus, RecordingTranscript } from '../lib/api';
   import AudioPlayer from './AudioPlayer.svelte';
 
@@ -111,11 +111,11 @@
     transcribing = recording.name;
     try {
       await transcribeFile(recording.path);
-      await loadRecordings();
-      // Auto-expand after transcription
-      await toggleTranscript(recording.name);
+      // Transcription runs in background - show message and don't try to load transcript yet
+      alert('Transcription started! This runs in the background and may take several minutes for long recordings. Refresh the page when done.');
     } catch (e) {
       console.error('Failed to transcribe:', e);
+      alert('Failed to start transcription.');
     } finally {
       transcribing = null;
     }
@@ -134,8 +134,13 @@
       loadingTranscript = filename;
       try {
         transcriptData[filename] = await getRecordingTranscript(filename);
-      } catch (e) {
-        console.error('Failed to load transcript:', e);
+      } catch (e: any) {
+        // 404 means transcript not ready yet - this is expected during transcription
+        if (e.message?.includes('404')) {
+          transcriptData[filename] = null as any; // Mark as "not ready"
+        } else {
+          console.error('Failed to load transcript:', e);
+        }
       } finally {
         loadingTranscript = null;
       }
@@ -189,7 +194,21 @@
 
   <!-- Recording Control Panel -->
   <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-8">
-    <h3 class="text-lg font-semibold text-white mb-4">Record Audio</h3>
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="text-lg font-semibold text-white">Record Audio</h3>
+      <button
+        class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-sm flex items-center gap-2"
+        on:click={async () => {
+          try {
+            await openRecordingsFolder();
+          } catch (e) {
+            alert('Failed to open folder');
+          }
+        }}
+      >
+        📂 Open Folder
+      </button>
+    </div>
 
     <div class="flex items-center gap-4">
       <div class="flex-1">
@@ -337,7 +356,10 @@
                   recordingName={recording.name}
                 />
               {:else}
-                <div class="text-center text-slate-500 py-8">Failed to load transcript</div>
+                <div class="text-center text-slate-500 py-8">
+                  <div class="text-2xl mb-2">⏳</div>
+                  Transcript not ready yet. If transcription is in progress, please wait and refresh.
+                </div>
               {/if}
             </div>
           {/if}

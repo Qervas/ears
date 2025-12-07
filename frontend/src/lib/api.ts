@@ -26,7 +26,7 @@ export interface Word {
   id: number;
   word: string;
   frequency: number;
-  status: 'learning' | 'known';
+  status: 'undiscovered' | 'learning' | 'known';
   first_seen: string;
   last_seen: string;
   explanation?: string;
@@ -44,11 +44,17 @@ export async function getVocabulary(
   limit = 100,
   offset = 0,
   status?: string,
-  sort = 'frequency'
+  sort = 'frequency',
+  search?: string
 ): Promise<VocabularyResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset), sort });
   if (status) params.set('status', status);
+  if (search) params.set('search', search);
   return request(`/vocabulary?${params}`);
+}
+
+export async function searchVocabulary(query: string, limit = 20): Promise<VocabularyResponse> {
+  return getVocabulary(limit, 0, undefined, 'frequency', query);
 }
 
 export async function getWord(word: string): Promise<Word> {
@@ -65,10 +71,12 @@ export async function updateWordStatus(word: string, status: string): Promise<vo
 // ============== Stats ==============
 
 export interface Stats {
-  total_words: number;
+  total: number;
+  total_words?: number;  // Legacy alias for total
+  undiscovered: number;
   learning: number;
   known: number;
-  total_occurrences: number;
+  total_occurrences?: number;
 }
 
 export async function getStats(): Promise<Stats> {
@@ -175,6 +183,46 @@ export interface BulkGenerationStatus {
   failed_words?: Array<{ word: string; error: string }>;
 }
 
+// ============== Spaced Repetition ==============
+
+export interface SRSWord extends Word {
+  srs_interval?: number;
+  srs_ease?: number;
+  srs_next_review?: string;
+  srs_review_count?: number;
+}
+
+export interface SRSStats {
+  due_now: number;
+  due_today: number;
+  total_learning: number;
+  reviewed_today: number;
+}
+
+export interface ReviewResult {
+  word: string;
+  quality: number;
+  new_interval: number;
+  new_ease: number;
+  next_review: string;
+  review_count: number;
+}
+
+export async function getDueWords(count = 20): Promise<{ words: SRSWord[]; count: number }> {
+  return request(`/vocabulary/srs/due?count=${count}`);
+}
+
+export async function getSRSStats(): Promise<SRSStats> {
+  return request('/vocabulary/srs/stats');
+}
+
+export async function recordReview(word: string, quality: number): Promise<ReviewResult> {
+  return request(`/vocabulary/srs/review/${encodeURIComponent(word)}`, {
+    method: 'POST',
+    body: JSON.stringify({ quality }),
+  });
+}
+
 export async function startBulkGeneration(): Promise<{ message: string; count: number }> {
   return request('/vocabulary/generate-all-explanations', {
     method: 'POST',
@@ -190,7 +238,7 @@ export interface ChatResponse {
 }
 
 export async function chat(message: string, context = ''): Promise<ChatResponse> {
-  return request('/chat', {
+  return request('/learn/chat', {
     method: 'POST',
     body: JSON.stringify({ message, context }),
   });
@@ -304,6 +352,12 @@ export async function startRecording(device_id: number): Promise<{ status: strin
 
 export async function stopRecording(): Promise<{ status: string; filepath: string }> {
   return request('/recording/stop', {
+    method: 'POST',
+  });
+}
+
+export async function openRecordingsFolder(): Promise<{ status: string; path: string }> {
+  return request('/recordings/open-folder', {
     method: 'POST',
   });
 }

@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { startBulkGeneration, getBulkGenerationStatus } from '../lib/api';
+  import type { BulkGenerationStatus } from '../lib/api';
 
   type AIProvider = 'lm-studio' | 'copilot-api' | 'openai';
 
@@ -12,6 +14,16 @@
   let saveMessage = '';
   let backups: Array<{ filename: string; size_mb: number; created: string }> = [];
   let creatingBackup = false;
+
+  // Bulk generation state
+  let generatingBulk = false;
+  let bulkStatus: BulkGenerationStatus = { running: false, current: 0, total: 0, completed: 0, failed: 0, failed_words: [] };
+  let statusPollInterval: number | null = null;
+  let currentGenerationMode: 'missing' | 'all' | null = null;
+
+  // Danger zone confirmation
+  let dangerConfirmText = '';
+  const DANGER_CONFIRM_PHRASE = 'REGENERATE';
 
   const freeModels = [
     'grok-code-fast-1',
@@ -38,7 +50,118 @@
 
     // Load backups list
     await loadBackups();
+
+    // Check if bulk generation is already running
+    try {
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        generatingBulk = true;
+        bulkStatus = status;
+        statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+      }
+    } catch (e) {
+      console.error('Failed to check bulk generation status:', e);
+    }
   });
+
+  onDestroy(() => {
+    if (statusPollInterval) {
+      clearInterval(statusPollInterval);
+    }
+  });
+
+  async function pollBulkStatus() {
+    try {
+      bulkStatus = await getBulkGenerationStatus();
+
+      if (!bulkStatus.running && generatingBulk) {
+        const mode = currentGenerationMode;
+        generatingBulk = false;
+        currentGenerationMode = null;
+
+        if (statusPollInterval) {
+          clearInterval(statusPollInterval);
+          statusPollInterval = null;
+        }
+
+        const modeText = mode === 'all' ? 'Regenerated ALL' : 'Generated';
+        let message = `Done! ${modeText} ${bulkStatus.completed} explanations`;
+        if (bulkStatus.failed > 0) {
+          message += ` (${bulkStatus.failed} failed)`;
+        }
+        alert(message);
+      }
+    } catch (e) {
+      console.error('Failed to poll bulk status:', e);
+    }
+  }
+
+  async function generateMissingExplanations() {
+    try {
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        alert(`Generation already in progress! ${status.current}/${status.total}`);
+        if (!statusPollInterval) {
+          generatingBulk = true;
+          statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+        }
+        return;
+      }
+
+      if (!confirm(`Generate AI explanations for words that don't have them yet?\n\nThis runs in the background.`)) {
+        return;
+      }
+
+      const result = await startBulkGeneration();
+
+      if (result.count === 0) {
+        alert('All words already have explanations!');
+        return;
+      }
+
+      generatingBulk = true;
+      currentGenerationMode = 'missing';
+      statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+    } catch (e) {
+      console.error('Failed to start bulk generation:', e);
+      alert('Failed to start. Is the AI provider configured?');
+    }
+  }
+
+  async function regenerateAllExplanations() {
+    // Check confirmation phrase
+    if (dangerConfirmText !== DANGER_CONFIRM_PHRASE) {
+      alert(`Please type "${DANGER_CONFIRM_PHRASE}" to confirm this action.`);
+      return;
+    }
+
+    try {
+      const status = await getBulkGenerationStatus();
+      if (status.running) {
+        alert(`Generation already in progress! ${status.current}/${status.total}`);
+        if (!statusPollInterval) {
+          generatingBulk = true;
+          statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+        }
+        return;
+      }
+
+      const response = await fetch('http://localhost:8000/api/vocabulary/regenerate-all-explanations', {
+        method: 'POST',
+      });
+
+      if (!response.ok) throw new Error('Failed');
+
+      const result = await response.json();
+      generatingBulk = true;
+      currentGenerationMode = 'all';
+      dangerConfirmText = ''; // Reset after successful start
+      statusPollInterval = window.setInterval(pollBulkStatus, 1000);
+    } catch (e) {
+      console.error('Failed to start regeneration:', e);
+      alert('Failed to start. Is the AI provider configured?');
+    }
+  }
 
   async function loadBackups() {
     try {
@@ -122,6 +245,27 @@
 
   function downloadBackup(filename: string) {
     window.open(`http://localhost:8000/api/database/download-backup/${filename}`, '_blank');
+  }
+
+  async function deleteBackup(filename: string) {
+    if (!confirm(`Are you sure you want to delete backup "${filename}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/database/backup/${filename}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        await loadBackups();
+      } else {
+        alert('Failed to delete backup');
+      }
+    } catch (e) {
+      console.error('Delete backup error:', e);
+      alert(`Failed to delete backup: ${e}`);
+    }
   }
 </script>
 
@@ -270,6 +414,50 @@
       </div>
     </div>
 
+    <!-- AI Explanations Section -->
+    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
+      <h2 class="text-xl font-semibold text-white mb-4">🤖 AI Explanations</h2>
+
+      <p class="text-sm text-slate-400 mb-4">
+        Generate AI-powered explanations for your vocabulary words. This helps you understand usage patterns, related words, and tips.
+      </p>
+
+      <button
+        on:click={generateMissingExplanations}
+        disabled={generatingBulk}
+        class="w-full px-4 py-3 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium rounded-lg transition-colors"
+      >
+        {#if generatingBulk && currentGenerationMode === 'missing'}
+          Generating... ({bulkStatus.current}/{bulkStatus.total})
+        {:else}
+          Generate Missing Explanations
+        {/if}
+      </button>
+
+      <p class="text-xs text-slate-500 mt-2">
+        Only generates explanations for words that don't have them yet. Safe to run multiple times.
+      </p>
+
+      {#if generatingBulk}
+        <div class="mt-4 p-4 bg-slate-900/50 rounded-lg border border-slate-700">
+          <div class="flex justify-between text-sm text-slate-400 mb-2">
+            <span>{currentGenerationMode === 'all' ? 'Regenerating ALL' : 'Generating missing'}</span>
+            <span>{bulkStatus.current} / {bulkStatus.total}</span>
+          </div>
+          <div class="h-2 bg-slate-700 rounded-full overflow-hidden">
+            <div
+              class="h-full bg-purple-600 transition-all duration-300"
+              style="width: {bulkStatus.total > 0 ? (bulkStatus.current / bulkStatus.total) * 100 : 0}%"
+            ></div>
+          </div>
+          <div class="flex justify-between text-xs text-slate-500 mt-1">
+            <span>Done: {bulkStatus.completed}</span>
+            <span>Failed: {bulkStatus.failed}</span>
+          </div>
+        </div>
+      {/if}
+    </div>
+
     <!-- Database Backups Section -->
     <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
       <h2 class="text-xl font-semibold text-white mb-4">📦 Database Backups</h2>
@@ -298,12 +486,20 @@
                     {backup.created} • {backup.size_mb} MB
                   </div>
                 </div>
-                <button
-                  on:click={() => downloadBackup(backup.filename)}
-                  class="ml-4 px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded transition-colors"
-                >
-                  ⬇ Download
-                </button>
+                <div class="flex gap-2 ml-4">
+                  <button
+                    on:click={() => downloadBackup(backup.filename)}
+                    class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-white text-sm rounded transition-colors"
+                  >
+                    ⬇ Download
+                  </button>
+                  <button
+                    on:click={() => deleteBackup(backup.filename)}
+                    class="px-3 py-1 bg-red-900/50 hover:bg-red-800 text-red-300 text-sm rounded transition-colors"
+                  >
+                    🗑 Delete
+                  </button>
+                </div>
               </div>
             {/each}
           </div>
@@ -314,7 +510,7 @@
     </div>
 
     <!-- Info Section -->
-    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700">
+    <div class="bg-slate-800 rounded-xl p-6 border border-slate-700 mb-6">
       <h2 class="text-xl font-semibold text-white mb-4">About AI Providers</h2>
 
       <div class="space-y-3 text-sm text-slate-300">
@@ -326,6 +522,49 @@
         </div>
         <div>
           <strong class="text-white">OpenAI API:</strong> Use OpenAI's GPT models. Requires API key and costs per use.
+        </div>
+      </div>
+    </div>
+
+    <!-- Danger Zone -->
+    <div class="bg-red-950/30 rounded-xl p-6 border border-red-900/50">
+      <h2 class="text-xl font-semibold text-red-400 mb-4">⚠️ Danger Zone</h2>
+
+      <p class="text-sm text-red-300/70 mb-4">
+        These actions are destructive and cannot be undone. Make sure you have a backup before proceeding.
+      </p>
+
+      <div class="space-y-4">
+        <div class="p-4 bg-red-900/20 rounded-lg border border-red-800/50">
+          <h3 class="text-sm font-semibold text-red-300 mb-2">Regenerate ALL Explanations</h3>
+          <p class="text-xs text-red-300/60 mb-3">
+            This will delete and regenerate explanations for ALL words, including ones that already have explanations. Use only if you want to start fresh with a different AI provider or model.
+          </p>
+
+          <div class="flex gap-3 items-end">
+            <div class="flex-1">
+              <label class="block text-xs text-red-300/60 mb-1">
+                Type <span class="font-mono font-bold text-red-400">{DANGER_CONFIRM_PHRASE}</span> to confirm
+              </label>
+              <input
+                type="text"
+                bind:value={dangerConfirmText}
+                placeholder="Type here..."
+                class="w-full px-3 py-2 bg-red-950/50 border border-red-800/50 rounded-lg text-white placeholder-red-300/30 focus:outline-none focus:border-red-600"
+              />
+            </div>
+            <button
+              on:click={regenerateAllExplanations}
+              disabled={generatingBulk || dangerConfirmText !== DANGER_CONFIRM_PHRASE}
+              class="px-4 py-2 bg-red-700 hover:bg-red-600 disabled:bg-slate-700 disabled:text-slate-500 text-white font-medium rounded-lg transition-colors whitespace-nowrap"
+            >
+              {#if generatingBulk && currentGenerationMode === 'all'}
+                Regenerating... ({bulkStatus.current}/{bulkStatus.total})
+              {:else}
+                Regenerate ALL
+              {/if}
+            </button>
+          </div>
         </div>
       </div>
     </div>
