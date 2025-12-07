@@ -183,6 +183,46 @@ export interface BulkGenerationStatus {
   failed_words?: Array<{ word: string; error: string }>;
 }
 
+// ============== Spaced Repetition ==============
+
+export interface SRSWord extends Word {
+  srs_interval?: number;
+  srs_ease?: number;
+  srs_next_review?: string;
+  srs_review_count?: number;
+}
+
+export interface SRSStats {
+  due_now: number;
+  due_today: number;
+  total_learning: number;
+  reviewed_today: number;
+}
+
+export interface ReviewResult {
+  word: string;
+  quality: number;
+  new_interval: number;
+  new_ease: number;
+  next_review: string;
+  review_count: number;
+}
+
+export async function getDueWords(count = 20): Promise<{ words: SRSWord[]; count: number }> {
+  return request(`/vocabulary/srs/due?count=${count}`);
+}
+
+export async function getSRSStats(): Promise<SRSStats> {
+  return request('/vocabulary/srs/stats');
+}
+
+export async function recordReview(word: string, quality: number): Promise<ReviewResult> {
+  return request(`/vocabulary/srs/review/${encodeURIComponent(word)}`, {
+    method: 'POST',
+    body: JSON.stringify({ quality }),
+  });
+}
+
 export async function startBulkGeneration(): Promise<{ message: string; count: number }> {
   return request('/vocabulary/generate-all-explanations', {
     method: 'POST',

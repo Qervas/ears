@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 
 from ..dependencies import db
-from ..models.vocabulary import WordStatus, ExplanationRequest, ChatMessage
+from ..models.vocabulary import WordStatus, ExplanationRequest, ChatMessage, ReviewRequest
 from ..services.ai_service import AIService
 
 router = APIRouter(prefix="/vocabulary", tags=["Vocabulary"])
@@ -137,6 +137,32 @@ async def update_word_status(word: str, status_update: WordStatus):
     """Update the learning status of a word."""
     await db.set_word_status(word, status_update.status)
     return {"status": "updated", "word": word, "new_status": status_update.status}
+
+
+# ============== Spaced Repetition ==============
+
+@router.get("/srs/due")
+async def get_due_words(count: int = 20):
+    """Get words due for spaced repetition review."""
+    words = await db.get_due_words(count)
+    return {"words": words, "count": len(words)}
+
+
+@router.get("/srs/stats")
+async def get_srs_stats():
+    """Get spaced repetition statistics."""
+    return await db.get_srs_stats()
+
+
+@router.post("/srs/review/{word}")
+async def record_review(word: str, review: ReviewRequest):
+    """Record a spaced repetition review for a word."""
+    if not 0 <= review.quality <= 5:
+        raise HTTPException(status_code=400, detail="Quality must be between 0 and 5")
+    result = await db.record_review(word, review.quality)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
 
 
 @router.post("/rebuild")
