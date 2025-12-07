@@ -3,19 +3,19 @@
 import json
 from pathlib import Path
 
-from database import Database
+from core import Database
+from core.config import (
+    BASE_DIR,
+    RECORDINGS_DIR,
+    TTS_CACHE_DIR,
+    BACKUPS_DIR,
+    SETTINGS_PATH,
+)
 
-# Base directory (backend folder)
-BASE_DIR = Path(__file__).parent.parent.resolve()
-RECORDINGS_DIR = BASE_DIR / "recordings"
-SETTINGS_FILE = BASE_DIR / "settings.json"
-BACKUP_DIR = BASE_DIR / "backups"
-TTS_CACHE = BASE_DIR / "tts_cache"
-
-# Ensure directories exist
-RECORDINGS_DIR.mkdir(exist_ok=True)
-BACKUP_DIR.mkdir(exist_ok=True)
-TTS_CACHE.mkdir(exist_ok=True)
+# Re-export paths for backward compatibility
+BACKUP_DIR = BACKUPS_DIR
+TTS_CACHE = TTS_CACHE_DIR
+SETTINGS_FILE = Path(SETTINGS_PATH)
 
 # Shared database instance
 db = Database()

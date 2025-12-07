@@ -1,23 +1,7 @@
-"""Configuration for the Swedish audio transcription pipeline."""
+"""
+Backward-compatible shim for config module.
 
-from pathlib import Path
+New code should import from core.config instead.
+"""
 
-# Base directory (where config.py is located)
-BASE_DIR = Path(__file__).parent.resolve()
-
-# Audio settings
-SAMPLE_RATE = 16000  # Whisper expects 16kHz
-CHANNELS = 1  # Mono
-CHUNK_DURATION = 5  # Seconds per chunk for transcription
-
-# Whisper settings
-WHISPER_MODEL = "small"  # Options: tiny, base, small, medium, large-v3
-WHISPER_LANGUAGE = "sv"  # Swedish
-WHISPER_DEVICE = "cpu"  # Use CPU (change to "cuda" if cuDNN is installed)
-
-# LM Studio settings (OpenAI-compatible API)
-LM_STUDIO_BASE_URL = "http://localhost:1234/v1"
-LM_STUDIO_API_KEY = "lm-studio"  # LM Studio doesn't need a real key
-
-# Storage
-DATABASE_PATH = str(BASE_DIR / "transcripts.db")
+from core.config import *

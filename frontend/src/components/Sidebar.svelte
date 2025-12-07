@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { currentView, stats } from '../lib/stores';
+  import { currentView, stats, activeLanguage } from '../lib/stores';
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
@@ -13,10 +13,27 @@
 </script>
 
 <aside class="w-64 bg-slate-800 border-r border-slate-700 flex flex-col">
-  <!-- Logo -->
+  <!-- Logo & Language -->
   <div class="p-6 border-b border-slate-700">
-    <h1 class="text-2xl font-bold text-white">👂 Ears</h1>
-    <p class="text-sm text-slate-400 mt-1">Learn from what you hear</p>
+    <div class="flex items-center justify-between">
+      <h1 class="text-2xl font-bold text-white">👂 Ears</h1>
+      {#if $activeLanguage}
+        <button
+          class="text-2xl hover:scale-110 transition-transform"
+          title="Learning {$activeLanguage.name} - Click to change"
+          on:click={() => currentView.set('settings')}
+        >
+          {$activeLanguage.flag}
+        </button>
+      {/if}
+    </div>
+    <p class="text-sm text-slate-400 mt-1">
+      {#if $activeLanguage}
+        Learning {$activeLanguage.name}
+      {:else}
+        Learn from what you hear
+      {/if}
+    </p>
   </div>
 
   <!-- Navigation -->

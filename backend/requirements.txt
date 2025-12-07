@@ -21,3 +21,4 @@ aiosqlite
 pydantic
 python-dotenv
 rich
+pyyaml

@@ -1,0 +1,62 @@
+# Language Configuration for Ears
+# To add a new language, just add an entry below.
+#
+# Required fields:
+#   name: English display name
+#   native_name: Name in that language
+#   flag: Emoji flag
+#   tts_voice: Azure TTS voice ID (see: https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support)
+#   whisper_code: Whisper language code for transcription
+
+default_language: sv
+
+languages:
+  de:
+    name: German
+    native_name: Deutsch
+    flag: "🇩🇪"
+    tts_voice: de-DE-KatjaNeural
+    whisper_code: de
+
+  fr:
+    name: French
+    native_name: Français
+    flag: "🇫🇷"
+    tts_voice: fr-FR-DeniseNeural
+    whisper_code: fr
+
+  sv:
+    name: Swedish
+    native_name: Svenska
+    flag: "🇸🇪"
+    tts_voice: sv-SE-SofieNeural
+    whisper_code: sv
+
+  en:
+    name: English
+    native_name: English
+    flag: "🇬🇧"
+    tts_voice: en-GB-SoniaNeural
+    whisper_code: en
+
+  es:
+    name: Spanish
+    native_name: Español
+    flag: "🇪🇸"
+    tts_voice: es-ES-ElviraNeural
+    whisper_code: es
+
+  ja:
+    name: Japanese
+    native_name: 日本語
+    flag: "🇯🇵"
+    tts_voice: ja-JP-NanamiNeural
+    whisper_code: ja
+
+  # Add more languages here:
+  # ko:
+  #   name: Korean
+  #   native_name: 한국어
+  #   flag: "🇰🇷"
+  #   tts_voice: ko-KR-SunHiNeural
+  #   whisper_code: ko

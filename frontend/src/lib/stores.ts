@@ -3,7 +3,7 @@
  */
 
 import { writable, derived } from 'svelte/store';
-import type { Word, Stats } from './api';
+import type { Word, Stats, Language, ActiveLanguage } from './api';
 
 // Persistent writable store (saves to localStorage)
 function persistentWritable<T>(key: string, initialValue: T) {
@@ -46,6 +46,9 @@ export const selectedWord = writable<Word | null>(null);
 
 // Global word modal (can be opened from anywhere)
 export const wordModal = writable<Word | null>(null);
+
+// Active language
+export const activeLanguage = writable<ActiveLanguage | null>(null);
 
 // Learning session
 export const learningWords = writable<Word[]>([]);

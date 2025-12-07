@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { currentView, stats } from './lib/stores';
-  import { getStats } from './lib/api';
+  import { currentView, stats, activeLanguage } from './lib/stores';
+  import { getStats, getActiveLanguage } from './lib/api';
   import Dashboard from './components/Dashboard.svelte';
   import Vocabulary from './components/Vocabulary.svelte';
   import Study from './components/Study.svelte';
@@ -14,10 +14,15 @@
 
   onMount(async () => {
     try {
+      // Load active language first
+      const lang = await getActiveLanguage();
+      activeLanguage.set(lang);
+
+      // Then load stats for that language
       const data = await getStats();
       stats.set(data);
     } catch (e) {
-      console.error('Failed to load stats:', e);
+      console.error('Failed to initialize:', e);
     }
   });
 </script>

@@ -142,12 +142,14 @@ export async function getGrammarQuiz(count = 10): Promise<GrammarQuizResponse> {
 
 // ============== TTS ==============
 
-export function getTTSUrl(text: string, voice = 'sv-SE-SofieNeural'): string {
-  return `${API_BASE}/tts/${encodeURIComponent(text)}?voice=${voice}`;
+export function getTTSUrl(text: string, voice?: string): string {
+  // If no voice specified, backend will use the active language's voice
+  const url = `${API_BASE}/tts/${encodeURIComponent(text)}`;
+  return voice ? `${url}?voice=${voice}` : url;
 }
 
-export async function playTTS(text: string): Promise<void> {
-  const audio = new Audio(getTTSUrl(text));
+export async function playTTS(text: string, voice?: string): Promise<void> {
+  const audio = new Audio(getTTSUrl(text, voice));
   await audio.play();
 }
 
@@ -365,5 +367,71 @@ export async function openRecordingsFolder(): Promise<{ status: string; path: st
 export async function rebuildVocabulary(): Promise<{ status: string }> {
   return request('/vocabulary/rebuild', {
     method: 'POST',
+  });
+}
+
+// ============== Languages ==============
+
+export interface Language {
+  name: string;
+  native_name: string;
+  flag: string;
+  tts_voice: string;
+  whisper_code: string;
+}
+
+export interface ActiveLanguage {
+  code: string;
+  name: string;
+  native_name: string;
+  flag: string;
+  tts_voice: string;
+}
+
+export interface LanguagesResponse {
+  languages: Record<string, Language>;
+  active: string;
+}
+
+export async function getLanguages(): Promise<LanguagesResponse> {
+  return request('/languages');
+}
+
+export async function getActiveLanguage(): Promise<ActiveLanguage> {
+  return request('/languages/active');
+}
+
+export async function setActiveLanguage(code: string): Promise<{ status: string; code: string; name: string; flag: string }> {
+  return request(`/languages/active/${code}`, {
+    method: 'PUT',
+  });
+}
+
+export interface LanguageInput {
+  code: string;
+  name: string;
+  native_name: string;
+  flag: string;
+  tts_voice: string;
+  whisper_code?: string;
+}
+
+export async function addLanguage(lang: LanguageInput): Promise<{ status: string; code: string; name: string }> {
+  return request('/languages', {
+    method: 'POST',
+    body: JSON.stringify(lang),
+  });
+}
+
+export async function updateLanguage(code: string, lang: LanguageInput): Promise<{ status: string; code: string; name: string }> {
+  return request(`/languages/${code}`, {
+    method: 'PUT',
+    body: JSON.stringify(lang),
+  });
+}
+
+export async function deleteLanguage(code: string): Promise<{ status: string; code: string }> {
+  return request(`/languages/${code}`, {
+    method: 'DELETE',
   });
 }
